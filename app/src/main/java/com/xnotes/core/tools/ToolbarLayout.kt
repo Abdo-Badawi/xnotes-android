@@ -52,6 +52,9 @@ enum class ToolbarItem(val id: String) {
     /** Canvas only: the overview map in the corner. */
     MINIMAP("minimap"),
 
+    /** Notes only: records how this device's pen, finger and palm touches look. */
+    INPUT_CUSTOM("input_custom"),
+
     /** Notes only: opens and closes room on a page. Last, so a stored bar missing older items too still gets it right after the lasso. */
     INSERT_SPACE("insert_space");
 
@@ -159,6 +162,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             ToolbarItem.TAPE to ToolbarItem.WAND,
             ToolbarItem.INSERT_SPACE to ToolbarItem.LASSO,
             ToolbarItem.MARKUP to ToolbarItem.TEXT_BOX,
+            ToolbarItem.INPUT_CUSTOM to ToolbarItem.VIEW,
         )
 
         /**
@@ -195,7 +199,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             listOf(ToolbarItem.IMAGE),
             listOf(ToolbarItem.COLORS),
             listOf(ToolbarItem.UNDO, ToolbarItem.REDO),
-            listOf(ToolbarItem.PAGE_NAV, ToolbarItem.STYLES, ToolbarItem.MARGINS, ToolbarItem.VIEW),
+            listOf(ToolbarItem.PAGE_NAV, ToolbarItem.STYLES, ToolbarItem.MARGINS, ToolbarItem.VIEW, ToolbarItem.INPUT_CUSTOM),
             listOf(ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK),
             listOf(ToolbarItem.FULLSCREEN),
         )

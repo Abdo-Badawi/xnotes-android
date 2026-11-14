@@ -229,6 +229,9 @@ class InteractionController(
         private set
     var inkColor: Rgba = InkPalette.DEFAULT
 
+    /** Colour the Input Customization classifier gave the coming stroke; consumed at DRAW begin. */
+    var inputStrokeColor: Rgba? = null
+
     /** Whether a finger draws (true) or pans (false). The stylus always uses the armed tool. */
     var fingerDraws: Boolean = false
 
@@ -314,6 +317,8 @@ class InteractionController(
     private var panVel = Pt.ZERO // smoothed finger velocity, viewport px/s
     private var panDownViewport = Pt.ZERO // where the current pan began (viewport px), for tap-to-dismiss
     private var panFromPenButton = false // a side-button pan parks where the pen lifted: no glide
+    private var inputMultiPan = false // a recorded multi-finger Pan signature drives this gesture (centroid pan, no pinch)
+    private var inputPanOverride = false // the pointer that just landed matched the recorded Pan signature
     private var downStoppedFling = false // this touch landed on a moving glide, so its lift isn't a dismiss tap
     private var panMayCommitText = false // pan begun off an open text box: a tap commits it, a drag scrolls
     private var downView: CanvasState.ViewSnapshot? = null // the view as this touch went down, put back if Android takes the touch back
@@ -690,6 +695,8 @@ class InteractionController(
      *  gesture, and put back a view it scrolled or zoomed, since the hand never meant to. */
     private fun takeBackTouch() {
         tapCandidate = false
+        inputMultiPan = false
+        inputPanOverride = false
         val movedView = movingView()
         abortGesture()
         if (movedView) downView?.let { state.restoreView(it); onViewChanged() }
@@ -779,6 +786,7 @@ class InteractionController(
     }
 
     private fun handleDown(e: MotionEvent) {
+        inputMultiPan = false
         if (hoverActionTool != null) endHoverAction() // a hovering side-button gesture yields to contact
         downStoppedFling = flinging // captured before stopping: a tap that only halts a glide must not dismiss
         stopFling() // a new touch halts any in-progress glide
@@ -804,6 +812,8 @@ class InteractionController(
         val effectiveTool: Tool = when {
             toolType == MotionEvent.TOOL_TYPE_ERASER -> Tool.ERASER
             buttonHeld && penButtonTool != null -> penButtonTool!!
+            // A recorded Pan signature on a finger forces panning regardless of fingerDraws.
+            toolType == MotionEvent.TOOL_TYPE_FINGER && inputPanOverride -> Tool.PAN
             // While something is selected, the stylus grabs that selection (resize on a handle,
             // move on the body) instead of inking through it, matching the finger. Off the
             // selection a pen or tape draws and dismisses it (see beginDraw); the Shape tool only dismisses.
@@ -1019,11 +1029,61 @@ class InteractionController(
             roomButton = null
             mode = PointerMode.IDLE
         }
+
+        // A pointer reclassified as a pen/eraser starts that gesture even if the first finger was panning/drawing.
+        val downIndex = e.actionIndex
+        val downType = e.getToolType(downIndex)
+        if (mode != PointerMode.DRAW && (mode == PointerMode.IDLE || mode == PointerMode.PAN || mode == PointerMode.PINCH || mode == PointerMode.ERASE)) {
+            if (downType == MotionEvent.TOOL_TYPE_STYLUS) {
+                // A real/reclassified pen stroke wins; a finger erase or pinch yields.
+                if (mode == PointerMode.ERASE && !erasingWithFinger) return
+                if (mode == PointerMode.PINCH) endPinch()
+                if (mode == PointerMode.ERASE) endErase()
+                if (mode == PointerMode.DRAW) endDraw(e) // finger draw yields to recorded Write
+                drawingPointerId = e.getPointerId(downIndex)
+                drawingIsStylus = true
+                val vx = e.getX(downIndex).toDouble()
+                val vy = e.getY(downIndex).toDouble()
+                beginDraw(
+                    state.viewportToContent(Pt(vx, vy)),
+                    resolvePressure(e, downIndex, downType),
+                    if (tool.isStroke) tool else Tool.PEN,
+                    e.eventTime,
+                    Pt(vx, vy),
+                )
+                return
+            }
+            if (downType == MotionEvent.TOOL_TYPE_ERASER && mode != PointerMode.ERASE) {
+                if (mode == PointerMode.PINCH) endPinch()
+                if (mode == PointerMode.DRAW) endDraw(e)
+                drawingPointerId = e.getPointerId(downIndex)
+                drawingIsStylus = true
+                erasingWithFinger = false
+                beginErase(e.getX(downIndex).toDouble(), e.getY(downIndex).toDouble())
+                return
+            }
+        }
+
         // A finger erase (finger-draw on) yields to a two-finger pinch: commit what was erased so
         // far as one undo step, then start the zoom. A stylus-eraser erase keeps ignoring incidental
         // finger/palm contact, so a resting hand never starts a zoom mid-erase.
         if (mode == PointerMode.ERASE) {
             if (erasingWithFinger && e.pointerCount >= 2) { endErase(); beginPinch(e) }
+            return
+        }
+
+        // A recorded multi-finger Pan keeps panning from the centroid instead of starting a pinch.
+        // lastPan is moved to the centroid so the moment the extra finger lands does not jump the view.
+        if (inputPanOverride && e.pointerCount >= 2) {
+            // Transition from a finger draw/pinch to a forced Pan.
+            if (mode == PointerMode.DRAW) endDraw(e)
+            if (mode == PointerMode.PINCH) endPinch()
+            if (mode != PointerMode.PAN) beginPan(e.getX(0).toDouble(), e.getY(0).toDouble())
+            lastPan = pointerCentroid(e, skipIndex = -1)
+            return
+        }
+        if (inputMultiPan && e.pointerCount >= 2) {
+            lastPan = pointerCentroid(e, skipIndex = -1)
             return
         }
         if (e.pointerCount >= 2) beginPinch(e)
@@ -1037,7 +1097,12 @@ class InteractionController(
         maybeCancelLongPress(Pt(vx, vy))
         when (mode) {
             PointerMode.DRAW -> extendDraw(e)
-            PointerMode.PAN -> extendPan(vx, vy)
+            PointerMode.PAN -> if (inputMultiPan && e.pointerCount >= 2) {
+                val c = pointerCentroid(e, skipIndex = -1)
+                extendPan(c.x, c.y)
+            } else {
+                extendPan(vx, vy)
+            }
             PointerMode.PINCH -> updatePinch(e)
             PointerMode.RULER_MOVE -> { ruler.center = Pt(vx, vy) + rulerGrabOffset; requestRender() }
             PointerMode.RULER_TRANSFORM -> updateRulerTransform(e)
@@ -1068,7 +1133,7 @@ class InteractionController(
         }
     }
 
-    private fun handlePointerUp(e: MotionEvent) {
+private fun handlePointerUp(e: MotionEvent) {
         if (mode == PointerMode.RULER_TRANSFORM) {
             // One finger lifted: fall back to a single-finger move with whichever finger remains.
             val up = e.actionIndex
@@ -1083,7 +1148,61 @@ class InteractionController(
             requestRender()
             return
         }
+
+        // End the draw/erase when the pointer that started it lifts, even on POINTER_UP.
+        if (mode == PointerMode.DRAW && e.getPointerId(e.actionIndex) == drawingPointerId) {
+            endDraw(e)
+            mode = PointerMode.IDLE
+            return
+        }
+        if (mode == PointerMode.ERASE && e.getPointerId(e.actionIndex) == drawingPointerId) {
+            endErase()
+            mode = PointerMode.IDLE
+            return
+        }
+
+        // A multipan keeps going on the fingers that remain, with lastPan moved to their centroid
+        // so lifting one finger neither ends the pan nor jumps the view.
+        if (inputMultiPan && mode == PointerMode.PAN) {
+            val remaining = (0 until e.pointerCount).filter { it != e.actionIndex }
+            if (remaining.isNotEmpty()) {
+                if (remaining.size == 1) drawingPointerId = e.getPointerId(remaining[0])
+                lastPan = pointerCentroid(e, skipIndex = e.actionIndex)
+            }
+            return
+        }
         if (mode == PointerMode.PINCH && e.pointerCount <= 2) endPinch()
+    }
+
+    private fun pointerCentroid(e: MotionEvent, skipIndex: Int): Pt {
+        var x = 0.0
+        var y = 0.0
+        var n = 0
+        for (i in 0 until e.pointerCount) {
+            if (i == skipIndex) continue
+            x += e.getX(i)
+            y += e.getY(i)
+            n++
+        }
+        return if (n == 0) Pt.ZERO else Pt(x / n, y / n)
+    }
+
+    /** The Input Customization classifier found a recorded multi-finger Pan signature. */
+    fun armInputMultiPan() {
+        inputMultiPan = true
+    }
+
+    fun resetInputMultiPan() {
+        inputMultiPan = false
+    }
+
+    /** The pointer that just landed matched the recorded Pan signature. */
+    fun armInputPan() {
+        inputPanOverride = true
+    }
+
+    fun resetInputPan() {
+        inputPanOverride = false
     }
 
     private fun handleUp(e: MotionEvent) {
@@ -1207,8 +1326,9 @@ class InteractionController(
         // dimensions by the draw-time zoom, so it draws at a constant on-screen thickness
         // whatever zoom you are at. Baked into the snapshot, so it is ordinary ink afterwards.
         // A pen with a colour override always draws in its own colour; otherwise it follows the
-        // toolbar's active ink colour.
-        val drawColor = cfg0.colorOverride ?: inkColor
+        // toolbar's active ink colour. An Input Customization alt-write colour wins for this stroke.
+        val drawColor = inputStrokeColor ?: cfg0.colorOverride ?: inkColor
+        inputStrokeColor = null
         val cfg = if (cfg0.scale) {
             cfg0.copy(rgba = drawColor)
         } else {

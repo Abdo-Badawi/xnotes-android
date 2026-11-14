@@ -66,6 +66,14 @@ object XnotesIcons {
         "M15 6l3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z",
     )
     val pan = icon("M5 9 2 12l3 3", "M9 5l3-3 3 3", "M15 19l-3 3-3-3", "M19 9l3 3-3 3", "M2 12h20", "M12 2v20")
+    // Input Customization: a finger touching a surface, for the touch-signature recorder.
+    val inputCustom = icon(
+        "M12 11a2 2 0 0 0-2 2v3a5 5 0 0 0 10 0v-1",
+        "M8 13V9a1.5 1.5 0 0 1 3 0v2",
+        "M2 6h4",
+        "M2 10h2",
+        "M2 14h6",
+    )
     val select = icon("M3 3l7.07 16.97 2.51-7.39 7.39-2.51Z", "M13 13l6 6")
     // Free selection, drawn as the marquee it leaves behind: a freehand loop in marching ants.
     val lasso = icon(

@@ -109,6 +109,7 @@ val ToolbarItem.labelRes: Int
         ToolbarItem.STYLES -> R.string.toolbar_styles
         ToolbarItem.MARGINS -> R.string.toolbar_margins
         ToolbarItem.VIEW -> R.string.toolbar_view
+        ToolbarItem.INPUT_CUSTOM -> R.string.input_customization
         ToolbarItem.ZOOM -> R.string.toolbar_zoom
         ToolbarItem.FIT -> R.string.toolbar_fit
         ToolbarItem.ZOOM_LOCK -> R.string.toolbar_zoom_lock

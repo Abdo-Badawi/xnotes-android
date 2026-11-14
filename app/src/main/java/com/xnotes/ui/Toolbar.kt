@@ -245,6 +245,11 @@ private fun ToolbarItemView(
         ToolbarItem.STYLES -> StylesButton(editor, onImportTemplate)
         ToolbarItem.MARGINS -> MarginsButton(editor)
         ToolbarItem.VIEW -> ViewButton(editor)
+        ToolbarItem.INPUT_CUSTOM -> ToolbarIcon(
+            XnotesIcons.inputCustom,
+            stringResource(R.string.input_customization),
+            active = editor.inputCustomization.open,
+        ) { editor.inputCustomization.toggleOpen() }
 
         ToolbarItem.ZOOM -> {
             ToolbarIcon(XnotesIcons.zoomOut, stringResource(R.string.zoom_out), enabled = !editor.zoomLocked, shortcut = Keys.ZOOM_OUT) { editor.zoomOut() }

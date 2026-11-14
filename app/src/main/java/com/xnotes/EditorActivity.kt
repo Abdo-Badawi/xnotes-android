@@ -229,16 +229,39 @@ class EditorActivity : ComponentActivity() {
     // here, the last point they are intact, and dispatch normally. A no-op on every other device.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         StylusButtonLatch.clicks.onTouch(ev) // a side-button press with the pen tip down is a hold, never a click
+        val active = editor?.active
+        // The Input Customization recorder sees raw contact sizes before any view does; while it
+        // is recording or live-testing it owns the whole touch.
+        if (active != null && active.inputCustomization.capture(ev)) return true
+
         val standard = standardPenAction(ev.actionMasked)
-        if (standard < 0 || ev.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) {
-            return eyedropperTouch.dispatch(ev, superTouch)
+        val samsung = standard >= 0 && ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
+        // Touches on the open panel are ordinary UI; only recording/testing (handled above) needs them.
+        val panelOpen = active?.inputCustomization?.open == true
+        val featureOn = !panelOpen && active?.preferences?.inputCustomization?.enabled == true
+        if (!samsung && !featureOn) return eyedropperTouch.dispatch(ev, superTouch)
+
+        // Reclassify only pointers the platform reported as fingers; stylus/eraser pointers pass
+        // through untouched. A null result means no tool type changed, so the original event is
+        // dispatched exactly as before, without an allocation.
+        val classified = if (featureOn) {
+            val a = requireNotNull(active)
+            a.inputCustomization.rewrite(
+                ev,
+                onAltColor = { a.stageInputStrokeColor(it) },
+                onPan = { if (it) a.armInputPan() else a.resetInputPan() },
+                onMultiPan = { if (it) a.armInputMultiPan() else a.resetInputMultiPan() },
+            )
+        } else {
+            null
         }
-        val rewritten = MotionEvent.obtain(ev)
-        rewritten.action = standard
+        val out = classified ?: if (samsung) MotionEvent.obtain(ev) else null
+        if (out == null) return eyedropperTouch.dispatch(ev, superTouch)
+        if (samsung) out.action = standard
         try {
-            return eyedropperTouch.dispatch(rewritten, superTouch)
+            return eyedropperTouch.dispatch(out, superTouch)
         } finally {
-            rewritten.recycle()
+            out.recycle()
         }
     }
 
@@ -1582,6 +1605,9 @@ private fun EditorPane(
             }
         }
         com.xnotes.ui.ColorDropOverlay(if (editor.canvasOpen) editor.infinite else editor)
+        if (editor.inputCustomization.open) {
+            com.xnotes.ui.InputCustomizationPanel(editor, Modifier.fillMaxSize())
+        }
     }
 }
 

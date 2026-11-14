@@ -304,6 +304,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     private var settings: Settings
         get() = LiveSettings.get(settingsRepo)
         set(value) { LiveSettings.set(value) }
+
+    /** The Input Customization panel and its touch recorder; the two split panes share one. */
+    var inputCustomization: InputCustomizationState = InputCustomizationState(
+        read = { settings.prefs.inputCustomization },
+        write = { customization -> applyPreferences(settings.prefs.copy(inputCustomization = customization)) },
+    )
     private var pdfSource: com.xnotes.platform.PdfSource? = null
 
     /** Whether the open note has a PDF, which the text markup tool needs. Set by the init block, so declared before it. */
@@ -2844,6 +2850,29 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun toggleFullscreen() = setFullscreenPref(!fullscreen)
+
+    /** Give the coming stroke the alt-write colour on whichever surface is on top. */
+    fun stageInputStrokeColor(color: Rgba?) {
+        if (canvasOpen) infinite.stageInputStrokeColor(color) else controller.inputStrokeColor = color
+    }
+
+    /** The pointer that just landed matched the recorded Pan signature. */
+    fun armInputPan() {
+        if (canvasOpen) infinite.armInputPan() else controller.armInputPan()
+    }
+
+    fun resetInputPan() {
+        if (canvasOpen) infinite.resetInputPan() else controller.resetInputPan()
+    }
+
+    /** The classifier found a recorded multi-finger Pan signature for the gesture now starting. */
+    fun armInputMultiPan() {
+        if (canvasOpen) infinite.armInputMultiPan() else controller.armInputMultiPan()
+    }
+
+    fun resetInputMultiPan() {
+        if (canvasOpen) infinite.resetInputMultiPan() else controller.resetInputMultiPan()
+    }
 
     /** Apply edited preferences live and persist (used by the Preferences dialog). */
     fun applyPreferences(p: Preferences) {
@@ -9146,6 +9175,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  one, and keeps its own document, history, canvas and session slot. */
     fun secondaryPane(): Editor = secondary ?: Editor(viewContext, Pane.SECONDARY).also {
         it.keyActions = keyActions // the shortcuts already resolve their target pane themselves
+        it.inputCustomization = inputCustomization // the panel and recorder are one per device
         it.sibling = this
         sibling = it
         secondaryStarted = false

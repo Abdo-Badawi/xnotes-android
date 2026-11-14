@@ -4,6 +4,7 @@ import com.xnotes.core.model.Orientation
 import com.xnotes.core.model.PageSize
 import com.xnotes.core.model.PageSizeChoice
 import com.xnotes.core.model.Rgba
+import com.xnotes.core.tools.InputCustomization
 import com.xnotes.core.util.NameTemplate
 import org.json.JSONObject
 
@@ -40,6 +41,8 @@ data class Preferences(
     val zoomLockPan: String = "single",
     /** Whether holding a freehand ink stroke still snaps it to a recognized shape. */
     val detectShapes: Boolean = true,
+    /** Per-device recordings that tell pen, finger and palm apart on boards without stylus reporting. */
+    val inputCustomization: InputCustomization = InputCustomization(),
     /** Tool the stylus side button activates while held; "none" disables it. */
     val penButtonTool: String = "eraser",
     /** Whether the side-button tool also activates during hover (no contact needed); eraser/pan only. */
@@ -139,6 +142,7 @@ data class Preferences(
         .put("finger_draws", fingerDraws)
         .put("zoom_lock_pan", zoomLockPan)
         .put("detect_shapes", detectShapes)
+        .put("input_customization", inputCustomization.toJson())
         .put("pen_button_tool", penButtonTool)
         .put("pen_button_hover", penButtonHover)
         .put("two_finger_tap", twoFingerTap)
@@ -273,6 +277,7 @@ data class Preferences(
                 fingerDraws = o.optBoolean("finger_draws", false),
                 zoomLockPan = zoomLockPan,
                 detectShapes = o.optBoolean("detect_shapes", true),
+                inputCustomization = InputCustomization.fromJson(o.optJSONObject("input_customization")),
                 penButtonTool = o.optString("pen_button_tool", "eraser").ifEmpty { "eraser" },
                 penButtonHover = o.optBoolean("pen_button_hover", false),
                 twoFingerTap = tapAction("two_finger_tap"),

@@ -2123,6 +2123,19 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         this.detectShapes = detectShapes
     }
 
+    /** The colour an Input Customization alt-write stroke should use, consumed at its next dial-down. */
+    fun stageInputStrokeColor(color: com.xnotes.core.model.Rgba?) {
+        interaction.inputStrokeColor = color
+    }
+
+    fun armInputMultiPan() = interaction.armInputMultiPan()
+
+    fun resetInputMultiPan() = interaction.resetInputMultiPan()
+
+    fun armInputPan() = interaction.armInputPan()
+
+    fun resetInputPan() = interaction.resetInputPan()
+
     fun toggleZoomLock() {
         zoomLocked = !zoomLocked
         interaction.zoomLocked = zoomLocked
