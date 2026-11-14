@@ -28,6 +28,35 @@ class SettingsTest {
         assertEquals(com.xnotes.canvas.ViewSettings(), s.viewDefaults)
     }
 
+    @Test fun floatingToolbarDefaultsToCollapsed() {
+        val look = Preferences().toolbarLook
+        assertFalse(look.floating)
+        assertEquals(ToolbarState.COLLAPSED, look.state)
+        assertEquals(0.5f, look.anchorX, 0f)
+        assertEquals(0.9f, look.anchorY, 0f)
+    }
+
+    @Test fun floatingToolbarRoundTrip() {
+        val look = ToolbarLook(
+            position = ToolbarPosition.LEFT,
+            size = ToolbarSize.COMPACT,
+            floating = true,
+            state = ToolbarState.EXPANDED,
+            anchorX = 0.25f,
+            anchorY = 0.75f,
+        )
+        val back = Settings.fromJson(Settings(prefs = Preferences(toolbarLook = look)).toJson()).prefs.toolbarLook
+        assertEquals(look, back)
+    }
+
+    @Test fun floatingToolbarAnchorIsClamped() {
+        val json = Settings(prefs = Preferences()).toJson()
+        json.getJSONObject("prefs").put("toolbar_anchor_x", 4.0).put("toolbar_anchor_y", -2.0)
+        val look = Settings.fromJson(json).prefs.toolbarLook
+        assertEquals(1f, look.anchorX, 0f)
+        assertEquals(0f, look.anchorY, 0f)
+    }
+
     @Test fun viewDefaultsRoundTrip() {
         val original = Settings(
             viewDefaults = com.xnotes.canvas.ViewSettings(

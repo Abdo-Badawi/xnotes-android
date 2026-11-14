@@ -1199,6 +1199,11 @@
     <string name="pref_toolbar_style">Style</string>
     <string name="toolbar_docked">Docked</string>
     <string name="toolbar_floating">Floating</string>
+    <string name="toolbar_open">Open toolbar</string>
+    <string name="toolbar_expand">Expand toolbar</string>
+    <string name="toolbar_compact">Compact toolbar</string>
+    <string name="toolbar_collapse">Collapse toolbar</string>
+    <string name="toolbar_move">Move toolbar</string>
     <string name="pref_toolbar_position">Position</string>
     <string name="pref_toolbar_size">Size</string>
     <string name="toolbar_size_compact">Compact</string>

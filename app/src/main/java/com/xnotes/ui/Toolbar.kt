@@ -86,6 +86,32 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * The icons both toolbar shapes use. The five stroke tools use the designed vector drawables
+ * (res/drawable/ic_stroke_*), tinted at the call site like every other icon; the rest use the
+ * built-in line set.
+ */
+@Composable
+internal fun toolbarToolIcons(): Map<Tool, ImageVector> = mapOf(
+    Tool.PEN to ImageVector.vectorResource(R.drawable.ic_stroke_regular),
+    Tool.DASHED to ImageVector.vectorResource(R.drawable.ic_stroke_dashed),
+    Tool.CALLIGRAPHY to ImageVector.vectorResource(R.drawable.ic_stroke_calligraphy),
+    Tool.SPEED to ImageVector.vectorResource(R.drawable.ic_stroke_speed),
+    Tool.TAPER to ImageVector.vectorResource(R.drawable.ic_stroke_taper),
+    Tool.HIGHLIGHTER to ImageVector.vectorResource(R.drawable.ic_stroke_highlighter),
+    Tool.ERASER to XnotesIcons.eraser,
+    Tool.PAN to XnotesIcons.pan,
+    Tool.SELECT to XnotesIcons.select,
+    Tool.LASSO to XnotesIcons.lasso,
+    Tool.SCREENSHOT to XnotesIcons.scissors,
+    Tool.SHAPE to XnotesIcons.shape,
+    Tool.TEXT to XnotesIcons.text,
+    Tool.TEXT_BOX to XnotesIcons.textBox,
+    Tool.MARKUP to XnotesIcons.markup,
+    Tool.TAPE to XnotesIcons.tape,
+    Tool.INSERT_SPACE to XnotesIcons.insertSpace,
+)
+
 @Composable
 fun Toolbar(
     editor: Editor,
@@ -99,32 +125,28 @@ fun Toolbar(
     onRecordAudio: () -> Unit = {},
     onTakePhoto: () -> Unit = {},
 ) {
-    // The five stroke tools use the designed vector drawables (res/drawable/ic_stroke_*),
-    // tinted at the call site like every other icon; the rest use the built-in line set.
-    val toolIcons: Map<Tool, ImageVector> = mapOf(
-        Tool.PEN to ImageVector.vectorResource(R.drawable.ic_stroke_regular),
-        Tool.DASHED to ImageVector.vectorResource(R.drawable.ic_stroke_dashed),
-        Tool.CALLIGRAPHY to ImageVector.vectorResource(R.drawable.ic_stroke_calligraphy),
-        Tool.SPEED to ImageVector.vectorResource(R.drawable.ic_stroke_speed),
-        Tool.TAPER to ImageVector.vectorResource(R.drawable.ic_stroke_taper),
-        Tool.HIGHLIGHTER to ImageVector.vectorResource(R.drawable.ic_stroke_highlighter),
-        Tool.ERASER to XnotesIcons.eraser,
-        Tool.PAN to XnotesIcons.pan,
-        Tool.SELECT to XnotesIcons.select,
-        Tool.LASSO to XnotesIcons.lasso,
-        Tool.SCREENSHOT to XnotesIcons.scissors,
-        Tool.SHAPE to XnotesIcons.shape,
-        Tool.TEXT to XnotesIcons.text,
-        Tool.TEXT_BOX to XnotesIcons.textBox,
-        Tool.MARKUP to XnotesIcons.markup,
-        Tool.TAPE to XnotesIcons.tape,
-        Tool.INSERT_SPACE to XnotesIcons.insertSpace,
-    )
+    val toolIcons = toolbarToolIcons()
     var configForTool by remember { mutableStateOf<Tool?>(null) }
     var switcherIndex by remember { mutableStateOf<Int?>(null) }
     var renaming by remember { mutableStateOf(false) }
+    // The three-state host supplies these; a docked bar leaves them null and looks unchanged.
+    val drag = LocalToolbarDrag.current
+    val onCollapse = LocalToolbarCollapse.current
+    val trailing: (@Composable () -> Unit)? = if (drag == null && onCollapse == null && onClosePane == null) null else {
+        {
+            drag?.let {
+                ToolbarDragHandle(it)
+                if (onCollapse != null || onClosePane != null) Separator()
+            }
+            onCollapse?.let {
+                ToolbarIcon(XnotesIcons.chevronDown, stringResource(R.string.toolbar_compact)) { it() }
+                if (onClosePane != null) Separator()
+            }
+            onClosePane?.let { ClosePaneButton(it) }
+        }
+    }
     // Pinned outside the scrolling strip so closing a split pane is always one tap away.
-    ToolbarFrame(armed = editor.tool, trailing = onClosePane?.let { { ClosePaneButton(it) } }) {
+    ToolbarFrame(armed = editor.tool, trailing = trailing) {
         // The bar is driven by the user-customisable layout; separators sit between non-empty
         // sections, and each item dispatches to its renderer (see ToolbarItemView).
         editor.toolbarLayout.visibleSections.forEachIndexed { si, section ->
@@ -293,7 +315,7 @@ private fun ToolbarItemView(
 
 /** A stroke/edit tool button: arms the tool, and re-clicking an armed config tool opens its popup. */
 @Composable
-private fun ToolButton(
+internal fun ToolButton(
     editor: Editor,
     tool: Tool,
     icon: ImageVector?,
@@ -606,7 +628,7 @@ private fun Rule() {
 
 /** "3 / 12" along the bar; down a side rail, where that is too wide, the two numbers stack. */
 @Composable
-private fun PageCounter(current: Int, count: Int, modifier: Modifier) {
+internal fun PageCounter(current: Int, count: Int, modifier: Modifier) {
     if (!LocalBar.current.vertical) {
         Label("$current / $count", modifier)
         return

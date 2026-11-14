@@ -84,6 +84,7 @@ internal val LocalToolbarCover = compositionLocalOf { PaddingValues(0.dp) }
 internal fun ColumnScope.ToolbarAround(
     bar: @Composable () -> Unit,
     onCover: (Double, Double, Double, Double) -> Unit,
+    keepClear: Boolean = true,
     content: @Composable (floatingBar: @Composable BoxScope.() -> Unit) -> Unit,
 ) {
     val look = LocalToolbarLook.current
@@ -105,7 +106,7 @@ internal fun ColumnScope.ToolbarAround(
     val px = with(LocalDensity.current) { depth.toPx().toDouble() }
     val position = look.position
     SideEffect {
-        onCover(
+        if (!keepClear) onCover(0.0, 0.0, 0.0, 0.0) else onCover(
             if (position == ToolbarPosition.LEFT) px else 0.0,
             if (position == ToolbarPosition.TOP) px else 0.0,
             if (position == ToolbarPosition.RIGHT) px else 0.0,
@@ -117,7 +118,7 @@ internal fun ColumnScope.ToolbarAround(
         ToolbarPosition.BOTTOM -> PaddingValues(bottom = depth) to Alignment.BottomCenter
         ToolbarPosition.LEFT -> PaddingValues.Absolute(left = depth) to AbsoluteAlignment.CenterLeft
         ToolbarPosition.RIGHT -> PaddingValues.Absolute(right = depth) to AbsoluteAlignment.CenterRight
-    }
+    }.let { (padding, align) -> (if (keepClear) padding else PaddingValues(0.dp)) to align }
     CompositionLocalProvider(LocalToolbarCover provides cover) {
         Box(rest) { content { Box(Modifier.align(edge).padding(FLOAT_MARGIN)) { bar() } } }
     }

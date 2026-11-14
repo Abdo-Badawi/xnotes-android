@@ -2909,6 +2909,14 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         settingsRepo.save(settings)
     }
 
+    /** Apply a floating toolbar state or anchor change live and persist it. */
+    fun applyToolbarLook(look: ToolbarLook) {
+        if (look == toolbarLook) return
+        toolbarLook = look
+        settings = settings.copy(prefs = settings.prefs.copy(toolbarLook = look))
+        saveSettingsSoon()
+    }
+
     /** The same, for the infinite canvas's bar. */
     fun applyCanvasToolbarLayout(layout: ToolbarLayout) {
         canvasToolbarLayout = layout
