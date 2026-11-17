@@ -20,6 +20,9 @@ enum class ToolbarItem(val id: String) {
     TAPER("taper"),
     HIGHLIGHTER("highlighter"),
     ERASER("eraser"),
+
+    /** Removes everything written on a page (or every page), as one undoable step. */
+    CLEAR_WRITINGS("clear_writings"),
     PAN("pan"),
     SELECT("select"),
     LASSO("lasso"),
@@ -167,6 +170,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             ToolbarItem.INSERT_SPACE to ToolbarItem.LASSO,
             ToolbarItem.MARKUP to ToolbarItem.TEXT_BOX,
             ToolbarItem.INPUT_CUSTOM to ToolbarItem.VIEW,
+            ToolbarItem.CLEAR_WRITINGS to ToolbarItem.ERASER,
         )
 
         /**
@@ -197,6 +201,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             listOf(
                 ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
                 ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER,
+                ToolbarItem.CLEAR_WRITINGS,
             ),
             listOf(ToolbarItem.PAN, ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.INSERT_SPACE, ToolbarItem.SCREENSHOT),
             listOf(ToolbarItem.WAND, ToolbarItem.TAPE, ToolbarItem.SHAPE, ToolbarItem.RULER, ToolbarItem.TEXT, ToolbarItem.TEXT_BOX, ToolbarItem.MARKUP),

@@ -245,6 +245,31 @@ private fun ToolbarItemView(
         ToolbarItem.MARKUP ->
             if (editor.hasPdf) ToolButton(editor, Tool.MARKUP, toolIcons[Tool.MARKUP], configForTool, setConfigForTool)
 
+        ToolbarItem.CLEAR_WRITINGS -> {
+            var clearOpen by remember { mutableStateOf(false) }
+            ToolbarIcon(XnotesIcons.trash, stringResource(R.string.clear_writings)) { clearOpen = true }
+            if (clearOpen) AlertDialog(
+                onDismissRequest = { clearOpen = false },
+                title = { Text(stringResource(R.string.clear_writings)) },
+                text = { Text(stringResource(R.string.clear_writings_help)) },
+                confirmButton = {
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(onClick = { clearOpen = false; editor.clearCurrentPageWritings() }) {
+                            Text(stringResource(R.string.clear_this_page))
+                        }
+                        if (editor.pageCount > 1) {
+                            TextButton(onClick = { clearOpen = false; editor.clearAllPageWritings() }) {
+                                Text(stringResource(R.string.clear_all_pages))
+                            }
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { clearOpen = false }) { Text(stringResource(R.string.cancel)) }
+                },
+            )
+        }
+
         ToolbarItem.WAND ->
             ToolbarIcon(XnotesIcons.magicWand, stringResource(R.string.tool_wand), active = editor.wandEnabled) { editor.toggleWand() }
         ToolbarItem.RULER ->

@@ -90,6 +90,7 @@ val ToolbarItem.labelRes: Int
         ToolbarItem.TAPER -> R.string.tool_taper
         ToolbarItem.HIGHLIGHTER -> R.string.tool_highlighter
         ToolbarItem.ERASER -> R.string.tool_eraser
+        ToolbarItem.CLEAR_WRITINGS -> R.string.clear_writings
         ToolbarItem.PAN -> R.string.tool_pan
         ToolbarItem.SELECT -> R.string.tool_select
         ToolbarItem.LASSO -> R.string.tool_lasso

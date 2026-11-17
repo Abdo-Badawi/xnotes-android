@@ -795,6 +795,10 @@
     <string name="add_page">Add page</string>
     <string name="insert_pdf">Insert PDF</string>
     <string name="erase_page">Erase page</string>
+    <string name="clear_writings">Clear writings</string>
+    <string name="clear_writings_help">Remove every drawing, shape, text and image. This can be undone.</string>
+    <string name="clear_this_page">This page</string>
+    <string name="clear_all_pages">All pages</string>
     <string name="share_ellipsis">Share…</string>
     <string name="save_as_ellipsis">Save as…</string>
     <string name="clear_selection">Clear selection</string>

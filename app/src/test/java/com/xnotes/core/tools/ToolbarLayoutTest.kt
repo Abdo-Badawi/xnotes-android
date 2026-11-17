@@ -20,6 +20,7 @@ class ToolbarLayoutTest {
             listOf(
                 ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
                 ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER,
+                ToolbarItem.CLEAR_WRITINGS,
             ),
             d.sections[2].entries.map { it.item },
         )

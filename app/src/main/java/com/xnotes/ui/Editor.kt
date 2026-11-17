@@ -6959,6 +6959,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         afterPageEdit()
     }
 
+    /** Clear everything written on the current page, as one undo step. */
+    fun clearCurrentPageWritings() = erasePages(listOf(pageIndex))
+
+    /** Clear everything written on every page, as one undo step. */
+    fun clearAllPageWritings() = erasePages(state.document.pages.indices.toList())
+
     /** Put copies of the pages at [indices] (note order) on the page clipboard, for a paste in any note. */
     fun copyPages(indices: List<Int>) = putPagesBy(indices, cut = false)
 
