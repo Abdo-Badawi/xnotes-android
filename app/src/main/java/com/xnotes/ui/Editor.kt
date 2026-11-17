@@ -581,6 +581,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** The infinite canvas's own bar. Its own layout: the two surfaces hold different items. */
     var canvasToolbarLayout by mutableStateOf(ToolbarLayout.CANVAS_DEFAULT)
         private set
+
+    /** The floating bar's short row. Its own layout: the short row is not the full bar. */
+    var compactToolbarLayout by mutableStateOf(ToolbarLayout.COMPACT_DEFAULT)
+        private set
     var renderScale by mutableStateOf(1.0)
         private set
     var sidebarVisible by mutableStateOf(false)
@@ -2720,6 +2724,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         toolbarColorCount = settings.toolbarColorCount
         toolbarLayout = settings.toolbarLayout
         canvasToolbarLayout = settings.canvasToolbarLayout
+        compactToolbarLayout = settings.compactToolbarLayout
         activeColorIndex = settings.activeColor.coerceIn(0, toolbarColorCount - 1)
         // Render always at 1x (the DPI/supersampling control was removed).
         renderScale = 1.0
@@ -2922,6 +2927,13 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         canvasToolbarLayout = layout
         infiniteOrNull?.toolbarLayout = layout
         settings = settings.copy(canvasToolbarLayout = layout)
+        settingsRepo.save(settings)
+    }
+
+    /** The same, for the floating bar's short row. */
+    fun applyCompactToolbarLayout(layout: ToolbarLayout) {
+        compactToolbarLayout = layout
+        settings = settings.copy(compactToolbarLayout = layout)
         settingsRepo.save(settings)
     }
 

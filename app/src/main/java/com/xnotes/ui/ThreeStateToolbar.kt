@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +62,9 @@ internal val LocalToolbarDrag = androidx.compose.runtime.compositionLocalOf<Tool
 /** How the expanded bar folds back to the compact row, supplied only by [ThreeStateToolbarHost]. */
 internal val LocalToolbarCollapse = androidx.compose.runtime.compositionLocalOf<(() -> Unit)?> { null }
 
+/** How the compact row opens the full bar, supplied only while the short row is showing. */
+internal val LocalToolbarExpand = androidx.compose.runtime.compositionLocalOf<(() -> Unit)?> { null }
+
 /**
  * The floating paged toolbar's three shapes. A single icon sits over the page; tapping it opens a
  * compact row of the tools a PDF is read and marked with; that row's expand button hands the same
@@ -76,7 +78,7 @@ internal val LocalToolbarCollapse = androidx.compose.runtime.compositionLocalOf<
 fun ThreeStateToolbarHost(
     editor: Editor,
     modifier: Modifier = Modifier,
-    expanded: @Composable () -> Unit,
+    bar: @Composable (com.xnotes.core.tools.ToolbarLayout) -> Unit,
 ) {
     val look = editor.toolbarLook
     val density = LocalDensity.current
@@ -146,16 +148,15 @@ fun ThreeStateToolbarHost(
                     drag = drag,
                     onExpand = { setState(ToolbarState.COMPACT) },
                 )
-                ToolbarState.COMPACT -> CompactToolbar(
-                    editor = editor,
-                    drag = drag,
-                    onExpand = { setState(ToolbarState.EXPANDED) },
-                    onCollapse = { setState(ToolbarState.COLLAPSED) },
-                )
+                ToolbarState.COMPACT -> CompositionLocalProvider(
+                    LocalToolbarDrag provides drag,
+                    LocalToolbarExpand provides { setState(ToolbarState.EXPANDED) },
+                    LocalToolbarCollapse provides { setState(ToolbarState.COLLAPSED) },
+                ) { bar(editor.compactToolbarLayout) }
                 ToolbarState.EXPANDED -> CompositionLocalProvider(
                     LocalToolbarDrag provides drag,
                     LocalToolbarCollapse provides { setState(ToolbarState.COMPACT) },
-                ) { expanded() }
+                ) { bar(editor.toolbarLayout) }
             }
         }
     }
@@ -193,83 +194,6 @@ private fun CollapsedToolbarIcon(editor: Editor, drag: ToolbarDrag, onExpand: ()
             tint = palette.text.toComposeColor(),
             modifier = Modifier.size(bar.icon),
         )
-    }
-}
-
-/**
- * The compact row: page navigation and index, the tools a PDF is read and marked with, the current
- * three swatches, and the way in and out of the full bar. It is the same [ToolbarFrame] and the same
- * [ToolButton]/[Swatch]/[ToolbarIcon] controls the expanded bar uses, just fewer of them.
- */
-@Composable
-private fun CompactToolbar(
-    editor: Editor,
-    drag: ToolbarDrag,
-    onExpand: () -> Unit,
-    onCollapse: () -> Unit,
-) {
-    val icons = toolbarToolIcons()
-    var configForTool by remember { mutableStateOf<Tool?>(null) }
-    var jumpOpen by remember { mutableStateOf(false) }
-    ToolbarFrame(
-        armed = editor.tool,
-        trailing = {
-            ToolbarDragHandle(drag)
-            Separator()
-            ToolbarIcon(XnotesIcons.chevronDown, stringResource(R.string.toolbar_collapse)) { onCollapse() }
-        },
-    ) {
-        ToolbarIcon(XnotesIcons.prev, stringResource(R.string.previous_page)) { editor.prevPage() }
-        Box {
-            Tooltip(stringResource(R.string.title_go_to_page)) {
-                PageCounter(
-                    editor.pageIndex + 1,
-                    editor.pageCount,
-                    Modifier
-                        .clip(MaterialTheme.shapes.extraSmall)
-                        .clickable { jumpOpen = true },
-                )
-            }
-            if (jumpOpen) PageJumpPopup(editor) { jumpOpen = false }
-        }
-        ToolbarIcon(XnotesIcons.next, stringResource(R.string.next_page)) { editor.nextPage() }
-        Separator()
-        ToolButton(editor, Tool.PAN, icons[Tool.PAN], configForTool) { configForTool = it }
-        ToolButton(editor, Tool.PEN, icons[Tool.PEN], configForTool) { configForTool = it }
-        Separator()
-        CompactSwatches(editor)
-        Separator()
-        ToolButton(editor, Tool.ERASER, icons[Tool.ERASER], configForTool) { configForTool = it }
-        Separator()
-        ToolbarIcon(XnotesIcons.more, stringResource(R.string.toolbar_expand)) { onExpand() }
-    }
-}
-
-/**
- * Three swatches for the compact row: the first three of the bar's own palette, plus the active
- * colour when it sits past them, so the indicator always shows the pen's current ink. Tapping the
- * active swatch opens the existing swatch picker; tapping another arms it, as the full bar does.
- */
-@Composable
-private fun CompactSwatches(editor: Editor) {
-    var switcherIndex by remember { mutableStateOf<Int?>(null) }
-    val limit = editor.toolbarColors.size.coerceAtMost(editor.toolbarColorCount)
-    val active = editor.activeColorIndex.coerceIn(0, (limit - 1).coerceAtLeast(0))
-    val indices = (0 until limit).take(3).toMutableList().apply {
-        if (limit > 0 && active !in this) add(active)
-    }
-    for (i in indices) {
-        val color = editor.toolbarColors[i]
-        Box {
-            Swatch(
-                color = color.toComposeColor(),
-                active = i == active,
-                drag = editor,
-                ink = color,
-                onClick = { if (i == active) switcherIndex = i else editor.pickColor(i) },
-            )
-            if (switcherIndex == i) ColorSwitcherPopup(editor, i) { switcherIndex = null }
-        }
     }
 }
 

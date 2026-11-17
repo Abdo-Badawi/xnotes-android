@@ -73,6 +73,7 @@ import com.xnotes.R
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.tools.Tool
 import com.xnotes.core.tools.ToolbarItem
+import com.xnotes.core.tools.ToolbarLayout
 import com.xnotes.platform.ImageDecoder
 import com.xnotes.ui.icons.XnotesIcons
 import com.xnotes.ui.theme.LocalPalette
@@ -124,6 +125,7 @@ fun Toolbar(
     onInsertAudio: () -> Unit = {},
     onRecordAudio: () -> Unit = {},
     onTakePhoto: () -> Unit = {},
+    layout: ToolbarLayout = editor.toolbarLayout,
 ) {
     val toolIcons = toolbarToolIcons()
     var configForTool by remember { mutableStateOf<Tool?>(null) }
@@ -131,25 +133,31 @@ fun Toolbar(
     var renaming by remember { mutableStateOf(false) }
     // The three-state host supplies these; a docked bar leaves them null and looks unchanged.
     val drag = LocalToolbarDrag.current
+    val onExpand = LocalToolbarExpand.current
     val onCollapse = LocalToolbarCollapse.current
-    val trailing: (@Composable () -> Unit)? = if (drag == null && onCollapse == null && onClosePane == null) null else {
-        {
-            drag?.let {
-                ToolbarDragHandle(it)
-                if (onCollapse != null || onClosePane != null) Separator()
+    val trailing: (@Composable () -> Unit)? =
+        if (drag == null && onExpand == null && onCollapse == null && onClosePane == null) null else {
+            {
+                drag?.let {
+                    ToolbarDragHandle(it)
+                    if (onExpand != null || onCollapse != null || onClosePane != null) Separator()
+                }
+                onExpand?.let {
+                    ToolbarIcon(XnotesIcons.more, stringResource(R.string.toolbar_expand)) { it() }
+                    if (onCollapse != null || onClosePane != null) Separator()
+                }
+                onCollapse?.let {
+                    ToolbarIcon(XnotesIcons.chevronDown, stringResource(R.string.toolbar_compact)) { it() }
+                    if (onClosePane != null) Separator()
+                }
+                onClosePane?.let { ClosePaneButton(it) }
             }
-            onCollapse?.let {
-                ToolbarIcon(XnotesIcons.chevronDown, stringResource(R.string.toolbar_compact)) { it() }
-                if (onClosePane != null) Separator()
-            }
-            onClosePane?.let { ClosePaneButton(it) }
         }
-    }
     // Pinned outside the scrolling strip so closing a split pane is always one tap away.
     ToolbarFrame(armed = editor.tool, trailing = trailing) {
         // The bar is driven by the user-customisable layout; separators sit between non-empty
         // sections, and each item dispatches to its renderer (see ToolbarItemView).
-        editor.toolbarLayout.visibleSections.forEachIndexed { si, section ->
+        layout.visibleSections.forEachIndexed { si, section ->
             if (si > 0) Separator()
             section.visibleEntries.forEach { entry ->
                 ToolbarItemView(

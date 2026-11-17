@@ -231,6 +231,56 @@ class ToolbarLayoutTest {
         assertTrue(back.sections.last().entries.any { it.item == ToolbarItem.MINIMAP && it.visible })
     }
 
+    // --- the floating short row: every paged item offered, extras hidden by default ---
+
+    @Test fun theCompactDefaultRoundTripsThroughRaw() {
+        assertEquals(
+            ToolbarLayout.COMPACT_DEFAULT,
+            ToolbarLayout.fromRaw(
+                ToolbarLayout.COMPACT_DEFAULT.toRaw(),
+                ToolbarLayout.NOTE_ITEMS,
+                ToolbarLayout.COMPACT_DEFAULT,
+                appendedVisible = false,
+            ),
+        )
+    }
+
+    @Test fun everyPagedItemCanBeOfferedOnTheShortRow() {
+        val items = ToolbarLayout.COMPACT_DEFAULT.items()
+        assertEquals(ToolbarLayout.NOTE_ITEMS, items.toSet())
+        assertEquals(ToolbarLayout.NOTE_ITEMS.size, items.size)
+    }
+
+    @Test fun theCompactDefaultShowsOnlyItsFiveStartingItems() {
+        val visible = ToolbarLayout.COMPACT_DEFAULT.visibleSections
+            .flatMap { s -> s.visibleEntries }
+            .map { it.item }
+        assertEquals(
+            listOf(
+                ToolbarItem.PAGE_NAV,
+                ToolbarItem.PAN,
+                ToolbarItem.PEN,
+                ToolbarItem.COLORS,
+                ToolbarItem.ERASER,
+            ),
+            visible,
+        )
+    }
+
+    @Test fun aShortRowStoredBeforeAnItemExistedGainsItHidden() {
+        val raw = ToolbarLayout.COMPACT_DEFAULT.toRaw()
+            .map { s -> s.filterNot { it.first == ToolbarItem.ERASER.id } }
+        val back = ToolbarLayout.fromRaw(
+            raw,
+            ToolbarLayout.NOTE_ITEMS,
+            ToolbarLayout.COMPACT_DEFAULT,
+            appendedVisible = false,
+        )
+        val eraser = back.sections.flatMap { it.entries }.firstOrNull { it.item == ToolbarItem.ERASER }
+        assertTrue(eraser != null && !eraser.visible)
+        assertEquals(ToolbarLayout.NOTE_ITEMS, back.items().toSet())
+    }
+
     @Test fun anEmptyCanvasLayoutFallsBackToTheCanvasDefault() {
         assertEquals(
             ToolbarLayout.CANVAS_DEFAULT,

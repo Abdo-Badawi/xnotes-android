@@ -2,9 +2,11 @@ package com.xnotes.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,8 +25,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -48,6 +54,7 @@ import com.xnotes.core.tools.ToolbarSection
 import com.xnotes.ui.icons.XnotesIcons
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
+import kotlinx.coroutines.delay
 
 /**
  * The toolbar customizer, rendered inline inside Preferences. Each section is a bordered card whose
@@ -135,6 +142,135 @@ fun ToolbarCustomizerBody(
         }
         if (draggingSection && sectionDropTarget == layout.sections.size) SectionCaret()
         AddSectionChip(onClick = onAdd)
+    }
+}
+
+/**
+ * The drag state of one customiser section: what is lifted, where the finger is, the measured
+ * bounds, and the drop slot. Kept in a class so Preferences can run one editor for the full bar and
+ * one for the floating short row without repeating the gesture plumbing, and draw the drag ghost at
+ * the pane root for whichever is active.
+ */
+@Stable
+internal class ToolbarEditorState {
+    var dragItem by mutableStateOf<ToolbarItem?>(null)
+    var dragFinger by mutableStateOf(Offset.Zero)
+    var dragGrab by mutableStateOf(Offset.Zero)
+    var dropTarget by mutableStateOf<Pair<Int, Int>?>(null)
+    val chipBounds = mutableMapOf<ToolbarItem, Rect>()
+    val sectionBounds = mutableMapOf<Int, Rect>()
+    val sectionGrabBounds = mutableMapOf<Int, Rect>()
+    var dragSection by mutableStateOf<Int?>(null)
+    var sectionDropTarget by mutableStateOf<Int?>(null)
+
+    val dragging: Boolean get() = dragItem != null || dragSection != null
+
+    /** Drop stale bounds and any half-finished drag; used when switching the bar being edited. */
+    fun reset() {
+        chipBounds.clear()
+        sectionBounds.clear()
+        sectionGrabBounds.clear()
+        dragItem = null
+        dragSection = null
+        dropTarget = null
+        sectionDropTarget = null
+    }
+}
+
+/**
+ * One editable toolbar: the [ToolbarCustomizerBody] plus its drag bookkeeping and edge auto-scroll.
+ * [onApply] receives the layout after every toggle, drop or section change; the caller persists it.
+ */
+@Composable
+internal fun ToolbarCustomizer(
+    layout: ToolbarLayout,
+    state: ToolbarEditorState,
+    scrollState: ScrollState,
+    viewport: Rect,
+    onApply: (ToolbarLayout) -> Unit,
+) {
+    fun retarget() {
+        state.dropTarget = toolbarDropTarget(layout, state.dragFinger, state.chipBounds, state.sectionBounds)
+    }
+    fun retargetSection() {
+        state.sectionDropTarget = toolbarSectionDropTarget(layout, state.dragFinger, state.sectionBounds)
+    }
+    ToolbarCustomizerBody(
+        layout = layout,
+        dragItem = state.dragItem,
+        dropTarget = state.dropTarget,
+        dragSection = state.dragSection,
+        sectionDropTarget = state.sectionDropTarget,
+        chipBounds = state.chipBounds,
+        sectionBounds = state.sectionBounds,
+        sectionGrabBounds = state.sectionGrabBounds,
+        onToggle = { s, i -> onApply(layout.toggleVisible(s, i)) },
+        onDelete = { s -> onApply(layout.removeSection(s)) },
+        onAdd = { onApply(layout.addSection()) },
+        onDragStart = { item, local ->
+            state.dragItem = item
+            state.dragGrab = local
+            state.dragFinger = (state.chipBounds[item]?.topLeft ?: Offset.Zero) + local
+            retarget()
+        },
+        onDrag = { delta -> state.dragFinger += delta; retarget() },
+        onDrop = {
+            val target = state.dropTarget
+            val moving = state.dragItem
+            if (target != null && moving != null) {
+                val fSec = layout.sections.indexOfFirst { s -> s.entries.any { it.item == moving } }
+                val fIdx = if (fSec >= 0) layout.sections[fSec].entries.indexOfFirst { it.item == moving } else -1
+                if (fSec >= 0 && fIdx >= 0) onApply(layout.moveItem(fSec, fIdx, target.first, target.second))
+            }
+            state.dragItem = null
+            state.dropTarget = null
+        },
+        onCancel = {
+            state.dragItem = null
+            state.dropTarget = null
+        },
+        onSectionDragStart = { sec, local ->
+            state.dragSection = sec
+            val grab = state.sectionGrabBounds[sec]?.topLeft ?: state.sectionBounds[sec]?.topLeft ?: Offset.Zero
+            val card = state.sectionBounds[sec]?.topLeft ?: Offset.Zero
+            state.dragFinger = grab + local
+            state.dragGrab = state.dragFinger - card
+            retargetSection()
+        },
+        onSectionDrag = { delta -> state.dragFinger += delta; retargetSection() },
+        onSectionDrop = {
+            val from = state.dragSection
+            val insertAt = state.sectionDropTarget
+            if (from != null && insertAt != null) {
+                val to = (if (insertAt > from) insertAt - 1 else insertAt).coerceIn(0, layout.sections.lastIndex)
+                if (to != from) onApply(layout.moveSection(from, to))
+            }
+            state.dragSection = null
+            state.sectionDropTarget = null
+        },
+        onSectionCancel = {
+            state.dragSection = null
+            state.sectionDropTarget = null
+        },
+    )
+
+    // While a chip or section is held near a vertical edge of the scroll viewport, ease the list
+    // along so items off-screen can be reached without lifting the finger.
+    LaunchedEffect(state.dragging) {
+        while (state.dragging) {
+            val band = 90f
+            val y = state.dragFinger.y
+            val delta = when {
+                y < viewport.top + band -> -((viewport.top + band - y) / band) * 14f
+                y > viewport.bottom - band -> ((y - (viewport.bottom - band)) / band) * 14f
+                else -> 0f
+            }
+            if (delta != 0f) {
+                scrollState.scrollBy(delta)
+                if (state.dragItem != null) retarget() else retargetSection()
+            }
+            delay(16L)
+        }
     }
 }
 

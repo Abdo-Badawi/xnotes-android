@@ -1540,7 +1540,7 @@ private fun EditorPane(
                     }
                 }
             } else {
-                val expandedBar: @Composable () -> Unit = {
+                val pagedBar: @Composable (com.xnotes.core.tools.ToolbarLayout) -> Unit = { layout ->
                     Box(Modifier.endsPageSelection(editor)) { Toolbar(
                         editor,
                         onToggleFullscreen = actions.onToggleFullscreen,
@@ -1552,15 +1552,16 @@ private fun EditorPane(
                         onInsertAudio = { actions.onInsertAudio(editor) },
                         onRecordAudio = { actions.onRecordAudio(editor) },
                         onTakePhoto = { actions.onTakePhoto(editor) },
+                        layout = layout,
                     ) }
                 }
-                // A floating paged bar is the three-state one: icon, compact row, full bar. A docked
+                // A floating paged bar is the three-state one: icon, short row, full bar. A docked
                 // bar keeps its strip along the pane's edge and none of this applies.
                 val threeState = editor.toolbarLook.floating
                 val bar: @Composable () -> Unit = if (threeState) {
-                    { com.xnotes.ui.ThreeStateToolbarHost(editor, expanded = expandedBar) }
+                    { com.xnotes.ui.ThreeStateToolbarHost(editor, bar = pagedBar) }
                 } else {
-                    expandedBar
+                    { pagedBar(editor.toolbarLayout) }
                 }
                 ToolbarAround(
                     bar,

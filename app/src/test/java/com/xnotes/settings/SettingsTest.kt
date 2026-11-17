@@ -414,6 +414,19 @@ class SettingsTest {
         assertEquals(custom, back.toolbarLayout)
     }
 
+    @Test fun compactToolbarLayoutDefaultsWhenAbsent() {
+        assertEquals(ToolbarLayout.COMPACT_DEFAULT, Settings.fromJson(JSONObject()).compactToolbarLayout)
+    }
+
+    @Test fun compactToolbarLayoutRoundTripsShort() {
+        val custom = ToolbarLayout.COMPACT_DEFAULT.toggleVisible(1, 0)
+        val back = Settings.fromJson(Settings(compactToolbarLayout = custom).toJson())
+        assertEquals(custom, back.compactToolbarLayout)
+        // Every paged item is offered on the short row, but the extras stay hidden.
+        val visible = back.compactToolbarLayout.sections.flatMap { it.entries }.count { it.visible }
+        assertTrue(visible < back.compactToolbarLayout.sections.flatMap { it.entries }.size)
+    }
+
     @Test fun tapGesturesDefaultToNone() {
         val p = Preferences.fromJson(JSONObject())
         assertEquals("none", p.twoFingerTap)

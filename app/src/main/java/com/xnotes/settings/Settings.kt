@@ -56,6 +56,8 @@ data class Settings(
     val toolbarLayout: ToolbarLayout = ToolbarLayout.DEFAULT,
     /** The infinite canvas's own bar. A separate layout because the two hold different items. */
     val canvasToolbarLayout: ToolbarLayout = ToolbarLayout.CANVAS_DEFAULT,
+    /** The floating bar's short row, edited on its own from Preferences. */
+    val compactToolbarLayout: ToolbarLayout = ToolbarLayout.COMPACT_DEFAULT,
     val activeColor: Int = 0,
     /** The tool armed when the app was last paused, re-armed on the next launch. */
     val lastTool: Tool = Tool.DEFAULT,
@@ -121,6 +123,7 @@ data class Settings(
             .put("toolbar_color_count", toolbarColorCount)
             .put("toolbar_layout", toolbarLayoutJson(toolbarLayout))
             .put("canvas_toolbar_layout", toolbarLayoutJson(canvasToolbarLayout))
+            .put("compact_toolbar_layout", toolbarLayoutJson(compactToolbarLayout))
             .put("active_color", activeColor)
             .put("last_tool", lastTool.id)
             .put("recent_colors", JSONArray().apply { recentColors.forEach { put(rgbaArr(it)) } })
@@ -175,6 +178,12 @@ data class Settings(
                     o.optJSONObject("canvas_toolbar_layout"),
                     ToolbarLayout.CANVAS_ITEMS,
                     ToolbarLayout.CANVAS_DEFAULT,
+                ),
+                compactToolbarLayout = toolbarLayout(
+                    o.optJSONObject("compact_toolbar_layout"),
+                    ToolbarLayout.NOTE_ITEMS,
+                    ToolbarLayout.COMPACT_DEFAULT,
+                    appendedVisible = false,
                 ),
                 activeColor = o.optInt("active_color", 0).coerceIn(0, InkPalette.MAX_SWATCHES - 1),
                 // Only tools the toolbar can arm come back; a transient one (e.g. TEXT_BOX) would
@@ -495,6 +504,8 @@ data class Settings(
             o: JSONObject?,
             among: Set<com.xnotes.core.tools.ToolbarItem> = ToolbarLayout.NOTE_ITEMS,
             fallback: ToolbarLayout = ToolbarLayout.DEFAULT,
+            appendMissing: Boolean = true,
+            appendedVisible: Boolean = true,
         ): ToolbarLayout {
             if (o == null) return fallback
             val secArr = o.optJSONArray("sections") ?: return fallback
@@ -508,7 +519,7 @@ data class Settings(
                 }
                 raw.add(entries)
             }
-            return ToolbarLayout.fromRaw(raw, among, fallback)
+            return ToolbarLayout.fromRaw(raw, among, fallback, appendMissing, appendedVisible)
         }
     }
 }

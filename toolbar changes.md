@@ -135,24 +135,22 @@ touch slop, so a clean tap still opens the bar.
 
 ### Compact state
 
-`CompactToolbar` uses the same `ToolbarFrame`, `ToolbarIcon`, `ToolButton`, `Swatch`,
-`PageCounter`, `PageJumpPopup` and `ColorSwitcherPopup` as the full bar:
+The compact row is not hardcoded any more. It is driven by its own `ToolbarLayout`, so the user
+edits it in Preferences exactly as they edit the full bar, and the same `Toolbar` composable draws
+it:
 
-- Previous page.
-- Page index (`current / total`), tap opens the existing Go-to-page popup.
-- Next page.
-- Move tool (`Tool.PAN`).
-- Pen tool (`Tool.PEN`).
-- Three colour swatches: the first three palette colours, plus the active colour if it is outside
-  those three. The active swatch shows the selected-colour ring.
-  - Tap the active swatch → existing colour picker.
-  - Tap another swatch → arm that colour, as the full toolbar does.
-- Eraser tool (`Tool.ERASER`).
-- Expand → Expanded.
-- Collapse → Collapsed.
-- Drag grip → moves the bar.
+- `ThreeStateToolbarHost` calls the shared `Toolbar` with `editor.compactToolbarLayout`.
+- Its default (`ToolbarLayout.COMPACT_DEFAULT`) is the old row: page navigation, Move, Pen, the
+  colour swatches and Eraser.
+- Any paged-bar item can be added, hidden, reordered or grouped into sections; separators follow
+  the sections exactly as in the full bar.
+- The host appends the trailing controls through composition locals: the drag grip, an Expand
+  button (`toolbar_expand` → Expanded) and a Collapse button (`toolbar_compact` → Collapsed).
+- The full bar's trailing area is unchanged; it only gains the Expand button while the short row
+  is showing (`LocalToolbarExpand` is null elsewhere).
 
-The compact row is deliberately small: a few tools, not a hidden copy of the full toolbar.
+The compact row is deliberately small by default, but it is now the user's small row, not a
+hidden copy of the full toolbar.
 
 ### Expanded state
 
@@ -355,3 +353,59 @@ WSL path:
 - No emulator or physical device was connected, so screenshots/video of the running states could
   not be captured.
 - One unrelated unit test fails locally because of CRLF in `AI.md`, as described above.
+
+---
+
+## Short (compact) toolbar customisation
+
+The compact row is now a first-class, user-editable bar rather than a fixed list.
+
+### Layout and storage
+
+- `ToolbarLayout.COMPACT_DEFAULT` holds the short row: `PAGE_NAV`, `PAN` + `PEN`, `COLORS` and
+  `ERASER` visible, plus every other paged item present but **hidden**. The customiser lists them
+  all, so any tool can be revealed without leaving a dead chip on the bar.
+- `Settings.compactToolbarLayout` persists it under `compact_toolbar_layout`.
+- `ToolbarLayout.fromRaw(..., appendedVisible = false)` is used for this layout:
+  - an empty/missing key falls back to `COMPACT_DEFAULT`;
+  - a saved short row keeps its own choices, and any missing item (for example from an older
+    install or a newer app version) is appended hidden.
+- `Editor.applyCompactToolbarLayout(layout)` applies and saves it live.
+
+### Preferences
+
+A new **Short toolbar** section sits directly under the main toolbar customiser. It reuses the
+same editor (`ToolbarCustomizer` + `ToolbarDragGhost` + `SectionCardGhost`) and therefore the same
+interactions:
+
+- tap a chip to show/hide it;
+- long-press a chip to drag it within or across sections;
+- long-press a section's header to reorder it;
+- add and delete sections;
+- Reset restores `COMPACT_DEFAULT`.
+
+The drag state is per editor (`ToolbarEditorState`), so a drag in the full-bar editor cannot aim at
+a chip in the short-row editor. The floating ghost is still drawn once at the pane root from the
+editor that is currently dragging.
+
+### Rendering
+
+`ThreeStateToolbarHost` now takes a single `bar: @Composable (ToolbarLayout) -> Unit` and passes
+`editor.compactToolbarLayout` for COMPACT and `editor.toolbarLayout` for EXPANDED. Both states use
+the same `Toolbar` composable, so every item renderer, popup and gesture is shared. The host adds:
+
+- `LocalToolbarExpand` only in COMPACT (the "more" button that opens EXPANDED);
+- `LocalToolbarCollapse` in both COMPACT (to COLLAPSED) and EXPANDED (to COMPACT);
+- `LocalToolbarDrag` in both.
+
+Docked and infinite-canvas bars are unchanged: the new locals are null there, and `Toolbar`'s
+default `layout` argument remains `editor.toolbarLayout`.
+
+### Tests
+
+- `ToolbarLayoutTest.theCompactDefaultRoundTripsThroughRaw`
+- `ToolbarLayoutTest.aShortRowStoredBeforeAnItemExistedGainsItHidden`
+- `SettingsTest.compactToolbarLayoutDefaultsWhenAbsent`
+- `SettingsTest.compactToolbarLayoutRoundTripsShort`
+
+Both test classes pass.

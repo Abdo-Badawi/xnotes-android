@@ -124,32 +124,36 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
         return copy(sections = mutable.mapIndexed { idx, e -> sections[idx].copy(entries = e) })
     }
 
-    /** Add any of [among] missing from this layout, visible, so the bar never goes stale
+    /** Add any of [among] missing from this layout, visible by default, so the bar never goes stale
      *  across versions: an item with a designated neighbour ([INSERT_AFTER]) slots in right
-     *  after it; anything else is appended to the last section. */
-    fun withMissingItemsAppended(among: Set<ToolbarItem> = NOTE_ITEMS): ToolbarLayout {
+     *  after it; anything else is appended to the last section. [visible] is false for a curated
+     *  bar whose extra items should be offered but start hidden. */
+    fun withMissingItemsAppended(
+        among: Set<ToolbarItem> = NOTE_ITEMS,
+        visible: Boolean = true,
+    ): ToolbarLayout {
         var layout = this
         for (item in ToolbarItem.entries) {
             if (item !in among) continue
             if (layout.sections.any { s -> s.entries.any { it.item == item } }) continue
-            layout = layout.insertMissing(item)
+            layout = layout.insertMissing(item, visible)
         }
         return layout
     }
 
-    private fun insertMissing(item: ToolbarItem): ToolbarLayout {
+    private fun insertMissing(item: ToolbarItem, visible: Boolean): ToolbarLayout {
         val anchor = INSERT_AFTER[item]
         if (anchor != null) {
             sections.forEachIndexed { si, sec ->
                 val i = sec.entries.indexOfFirst { it.item == anchor }
                 if (i >= 0) {
-                    val entries = sec.entries.toMutableList().also { it.add(i + 1, ToolbarEntry(item)) }
+                    val entries = sec.entries.toMutableList().also { it.add(i + 1, ToolbarEntry(item, visible)) }
                     return copy(sections = sections.toMutableList().also { it[si] = sec.copy(entries = entries) })
                 }
             }
         }
         val last = sections.last()
-        return copy(sections = sections.dropLast(1) + last.copy(entries = last.entries + ToolbarEntry(item)))
+        return copy(sections = sections.dropLast(1) + last.copy(entries = last.entries + ToolbarEntry(item, visible)))
     }
 
     companion object {
@@ -204,6 +208,24 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             listOf(ToolbarItem.FULLSCREEN),
         )
 
+        /**
+         * The floating bar's short row. The five items that make a page readable are shown; every
+         * other paged item is present but hidden, so the same customiser can reveal it.
+         */
+        val COMPACT_DEFAULT: ToolbarLayout = run {
+            val shown = listOf(
+                listOf(ToolbarItem.PAGE_NAV),
+                listOf(ToolbarItem.PAN, ToolbarItem.PEN),
+                listOf(ToolbarItem.COLORS),
+                listOf(ToolbarItem.ERASER),
+            ).map { g -> ToolbarSection(g.map { ToolbarEntry(it, true) }) }
+            val visibleItems = shown.flatMap { s -> s.entries }.map { it.item }.toSet()
+            val extras = ToolbarItem.entries
+                .filter { it in NOTE_ITEMS && it !in visibleItems }
+                .map { ToolbarEntry(it, false) }
+            ToolbarLayout(shown + ToolbarSection(extras))
+        }
+
         /** Mirrors the hardcoded canvas bar (see InfiniteToolbar.kt). */
         val CANVAS_DEFAULT: ToolbarLayout = of(
             listOf(ToolbarItem.HOME, ToolbarItem.TITLE),
@@ -226,13 +248,16 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
         /**
          * Build from raw (id, visible) pairs per section as read from storage: ids outside [among]
          * are dropped, duplicates keep their first occurrence, empty input falls back to [fallback],
-         * and any item of [among] not present is appended so the bar never goes stale across
-         * versions.
+         * and, when [appendMissing], any item of [among] not present is appended so the bar never
+         * goes stale across versions. [appendedVisible] makes those additions visible or hidden.
+         * A curated layout (the short row) loads as saved but still gains any new item hidden.
          */
         fun fromRaw(
             rawSections: List<List<Pair<String, Boolean>>>,
             among: Set<ToolbarItem> = NOTE_ITEMS,
             fallback: ToolbarLayout = DEFAULT,
+            appendMissing: Boolean = true,
+            appendedVisible: Boolean = true,
         ): ToolbarLayout {
             if (rawSections.isEmpty()) return fallback
             val seen = LinkedHashSet<ToolbarItem>()
@@ -247,7 +272,8 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
                 )
             }
             if (sections.all { it.entries.isEmpty() }) return fallback
-            return ToolbarLayout(sections).withMissingItemsAppended(among)
+            val built = ToolbarLayout(sections)
+            return if (appendMissing) built.withMissingItemsAppended(among, appendedVisible) else built
         }
     }
 }
