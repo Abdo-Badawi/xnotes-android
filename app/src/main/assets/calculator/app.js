@@ -525,7 +525,7 @@
         `<div class="menu ${this.one ? 'one' : ''}${dense}">` +
         this.items.map((it, i) => {
           const k = it.k !== undefined ? it.k : (i < 9 ? String(i + 1) : '');
-          return `<div class="it ${i === this.sel ? 'sel' : ''}" data-tap="${i}">${k ? k + ':' : ''}${it.label}${it.chk ? '<span class="chk">◂</span>' : ''}</div>`;
+          return `<div class="it ${i === this.sel ? 'sel' : ''}" data-tap="${i}"><span class="lb">${k ? k + ':' : ''}${it.label}</span>${it.chk ? '<span class="chk">◂</span>' : ''}</div>`;
         }).join('') + '</div>';
     }
     key(a) {
