@@ -588,6 +588,13 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var renderScale by mutableStateOf(1.0)
         private set
     var sidebarVisible by mutableStateOf(false)
+
+    /** The floating calculator, opened from the toolbar's calculator key. */
+    var calculatorOpen by mutableStateOf(false)
+        private set
+
+    fun toggleCalculator() { calculatorOpen = !calculatorOpen }
+    fun closeCalculator() { calculatorOpen = false }
     /** Granted explorer root (a SAF tree URI), or null until the user picks a folder. */
     var browseRoot by mutableStateOf(settings.browseRoot)
         private set
@@ -2542,6 +2549,44 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         controller.selectPlaced(index, listOf(item))
         view.requestRender()
         return item
+    }
+
+    /**
+     * Put [text] on the page in view as a text box near the viewport centre, selected so it can be
+     * dragged into place, as one undo step. Used by the floating calculator's send-result button.
+     */
+    fun insertCalculatorResult(text: String) {
+        val body = text.trim()
+        if (body.isEmpty()) { message = appContext.getString(R.string.calculator_no_result); return }
+        if (canvasOpen) { message = appContext.getString(R.string.calculator_paged_only); return }
+        val doc = state.document
+        if (doc.pages.isEmpty()) return
+        val centre = state.viewportToContent(Pt(state.viewportW / 2.0, state.viewportH / 2.0))
+        val index = (state.pageIndexAtContent(centre) ?: state.currentPageIndex()).coerceIn(0, doc.pages.lastIndex)
+        val page = doc.pages[index]
+        val cover = state.footprint(page)
+        val local = state.toPageSpace(index, centre)
+        val width = (page.width * 0.55).coerceIn(120.0, 340.0)
+        val item = TextItem(
+            pos = Pt(
+                (local.x - width / 2.0).coerceIn(cover.left, (cover.right - width).coerceAtLeast(cover.left)),
+                (local.y - 24.0).coerceIn(cover.top, (cover.bottom - 60.0).coerceAtLeast(cover.top)),
+            ),
+            width = width,
+            height = 0.0,
+            text = body,
+            rgba = controller.inkColor,
+            pointSize = TextItem.DEFAULT_POINT_SIZE,
+            face = TextItem.DEFAULT_FACE,
+            measurer = textMeasurer,
+        )
+        page.items.add(item)
+        state.appendToCache(page, item)
+        history.push(AddItem(page, item))
+        doc.dirty = true
+        refreshContent()
+        controller.selectPlaced(index, listOf(item))
+        view.requestRender()
     }
 
     /** Read [item]'s waveform in the background, then show it and keep it with the note. */

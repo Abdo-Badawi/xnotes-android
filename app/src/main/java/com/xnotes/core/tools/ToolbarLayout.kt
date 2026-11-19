@@ -34,6 +34,9 @@ enum class ToolbarItem(val id: String) {
     TEXT("text"),
     TEXT_BOX("text_box"),
 
+    /** Opens the floating scientific calculator; its result can be dropped on the page as text. */
+    CALCULATOR("calculator"),
+
     /** The text markup tool; only notes with a PDF show it. */
     MARKUP("markup"),
     IMAGE("image"),
@@ -171,6 +174,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             ToolbarItem.MARKUP to ToolbarItem.TEXT_BOX,
             ToolbarItem.INPUT_CUSTOM to ToolbarItem.VIEW,
             ToolbarItem.CLEAR_WRITINGS to ToolbarItem.ERASER,
+            ToolbarItem.CALCULATOR to ToolbarItem.TEXT_BOX,
         )
 
         /**
@@ -204,7 +208,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
                 ToolbarItem.CLEAR_WRITINGS,
             ),
             listOf(ToolbarItem.PAN, ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.INSERT_SPACE, ToolbarItem.SCREENSHOT),
-            listOf(ToolbarItem.WAND, ToolbarItem.TAPE, ToolbarItem.SHAPE, ToolbarItem.RULER, ToolbarItem.TEXT, ToolbarItem.TEXT_BOX, ToolbarItem.MARKUP),
+            listOf(ToolbarItem.WAND, ToolbarItem.TAPE, ToolbarItem.SHAPE, ToolbarItem.RULER, ToolbarItem.TEXT, ToolbarItem.TEXT_BOX, ToolbarItem.CALCULATOR, ToolbarItem.MARKUP),
             listOf(ToolbarItem.IMAGE),
             listOf(ToolbarItem.COLORS),
             listOf(ToolbarItem.UNDO, ToolbarItem.REDO),

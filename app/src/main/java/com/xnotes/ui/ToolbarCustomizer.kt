@@ -591,6 +591,7 @@ private fun itemIcon(item: ToolbarItem): ImageVector = when (item) {
     ToolbarItem.RULER -> XnotesIcons.ruler
     ToolbarItem.TEXT -> XnotesIcons.text
     ToolbarItem.TEXT_BOX -> XnotesIcons.textBox
+    ToolbarItem.CALCULATOR -> XnotesIcons.calculator
     ToolbarItem.MARKUP -> XnotesIcons.markup
     ToolbarItem.IMAGE -> XnotesIcons.paperclip
     ToolbarItem.UNDO -> XnotesIcons.undo

@@ -102,6 +102,7 @@ val ToolbarItem.labelRes: Int
         ToolbarItem.RULER -> R.string.tool_ruler
         ToolbarItem.TEXT -> R.string.tool_text
         ToolbarItem.TEXT_BOX -> R.string.tool_text_box
+        ToolbarItem.CALCULATOR -> R.string.calculator
         ToolbarItem.MARKUP -> R.string.tool_markup
         ToolbarItem.IMAGE -> R.string.insert
         ToolbarItem.UNDO -> R.string.undo

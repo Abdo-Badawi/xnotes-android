@@ -270,6 +270,9 @@ private fun ToolbarItemView(
             )
         }
 
+        ToolbarItem.CALCULATOR ->
+            ToolbarIcon(XnotesIcons.calculator, stringResource(R.string.calculator), active = editor.calculatorOpen) { editor.toggleCalculator() }
+
         ToolbarItem.WAND ->
             ToolbarIcon(XnotesIcons.magicWand, stringResource(R.string.tool_wand), active = editor.wandEnabled) { editor.toggleWand() }
         ToolbarItem.RULER ->

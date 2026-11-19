@@ -1622,6 +1622,9 @@ private fun EditorPane(
             }
         }
         com.xnotes.ui.ColorDropOverlay(if (editor.canvasOpen) editor.infinite else editor)
+        if (editor.calculatorOpen) {
+            com.xnotes.ui.CalculatorWindow(editor)
+        }
         if (editor.inputCustomization.open) {
             com.xnotes.ui.InputCustomizationPanel(editor, Modifier.fillMaxSize())
         }
