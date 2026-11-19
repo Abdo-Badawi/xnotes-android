@@ -150,11 +150,13 @@ fun ThreeStateToolbarHost(
                 )
                 ToolbarState.COMPACT -> CompositionLocalProvider(
                     LocalToolbarDrag provides drag,
+                    LocalToolbarScale provides look.shortScale,
                     LocalToolbarExpand provides { setState(ToolbarState.EXPANDED) },
                     LocalToolbarCollapse provides { setState(ToolbarState.COLLAPSED) },
                 ) { bar(editor.compactToolbarLayout) }
                 ToolbarState.EXPANDED -> CompositionLocalProvider(
                     LocalToolbarDrag provides drag,
+                    LocalToolbarScale provides look.fullScale,
                     LocalToolbarCollapse provides { setState(ToolbarState.COMPACT) },
                 ) { bar(editor.toolbarLayout) }
             }
@@ -165,7 +167,7 @@ fun ThreeStateToolbarHost(
 /** The one floating button: the armed tool's own icon, dragged anywhere, tapped to open the row. */
 @Composable
 private fun CollapsedToolbarIcon(editor: Editor, drag: ToolbarDrag, onExpand: () -> Unit) {
-    val bar = barMetrics(editor.toolbarLook.size)
+    val bar = barMetrics(editor.toolbarLook.size, editor.toolbarLook.shortScale)
     val palette = LocalPalette.current
     val icon = toolbarToolIcons()[editor.tool] ?: XnotesIcons.pan
     Box(

@@ -44,6 +44,8 @@ class SettingsTest {
             state = ToolbarState.EXPANDED,
             anchorX = 0.25f,
             anchorY = 0.75f,
+            shortScale = 0.85f,
+            fullScale = 1.25f,
         )
         val back = Settings.fromJson(Settings(prefs = Preferences(toolbarLook = look)).toJson()).prefs.toolbarLook
         assertEquals(look, back)
@@ -52,9 +54,12 @@ class SettingsTest {
     @Test fun floatingToolbarAnchorIsClamped() {
         val json = Settings(prefs = Preferences()).toJson()
         json.getJSONObject("prefs").put("toolbar_anchor_x", 4.0).put("toolbar_anchor_y", -2.0)
+        json.getJSONObject("prefs").put("toolbar_short_scale", 9.0).put("toolbar_full_scale", 0.1)
         val look = Settings.fromJson(json).prefs.toolbarLook
         assertEquals(1f, look.anchorX, 0f)
         assertEquals(0f, look.anchorY, 0f)
+        assertEquals(ToolbarLook.MAX_SCALE, look.shortScale, 0f)
+        assertEquals(ToolbarLook.MIN_SCALE, look.fullScale, 0f)
     }
 
     @Test fun viewDefaultsRoundTrip() {
@@ -614,6 +619,8 @@ class SettingsTest {
         assertFalse(Preferences().toJson().has("toolbar_size"))
         assertFalse(Preferences().toJson().has("toolbar_position"))
         assertFalse(Preferences().toJson().has("toolbar_floating"))
+        assertFalse(Preferences().toJson().has("toolbar_short_scale"))
+        assertFalse(Preferences().toJson().has("toolbar_full_scale"))
     }
 
     @Test fun defaultPresetsRoundTripInEveryMode() {

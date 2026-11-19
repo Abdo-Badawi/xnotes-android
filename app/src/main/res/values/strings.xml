@@ -1217,6 +1217,8 @@
     <string name="toolbar_move">Move toolbar</string>
     <string name="pref_toolbar_position">Position</string>
     <string name="pref_toolbar_size">Size</string>
+    <string name="pref_toolbar_full_size">"Full toolbar size  %1$d%%"</string>
+    <string name="pref_toolbar_short_size">"Short toolbar size  %1$d%%"</string>
     <string name="toolbar_size_compact">Compact</string>
     <string name="toolbar_size_regular">Regular</string>
     <string name="toolbar_size_comfortable">Comfortable</string>

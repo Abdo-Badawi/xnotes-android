@@ -184,6 +184,8 @@ data class Preferences(
             if (toolbarLook.state != ToolbarState.COLLAPSED) put("toolbar_state", toolbarLook.state.id)
             if (toolbarLook.anchorX != 0.5f) put("toolbar_anchor_x", toolbarLook.anchorX.toDouble())
             if (toolbarLook.anchorY != 0.9f) put("toolbar_anchor_y", toolbarLook.anchorY.toDouble())
+            if (toolbarLook.shortScale != 1f) put("toolbar_short_scale", toolbarLook.shortScale.toDouble())
+            if (toolbarLook.fullScale != 1f) put("toolbar_full_scale", toolbarLook.fullScale.toDouble())
             startFullscreen?.let { put("start_fullscreen", it) }
             codeThemePath?.let { put("code_theme_path", it) }
             codeThemeName?.let { put("code_theme_name", it) }
@@ -267,6 +269,10 @@ data class Preferences(
                     state = ToolbarState.fromId(o.optString("toolbar_state")),
                     anchorX = o.optDouble("toolbar_anchor_x", 0.5).toFloat().coerceIn(0f, 1f),
                     anchorY = o.optDouble("toolbar_anchor_y", 0.9).toFloat().coerceIn(0f, 1f),
+                    shortScale = o.optDouble("toolbar_short_scale", 1.0).toFloat()
+                        .coerceIn(ToolbarLook.MIN_SCALE, ToolbarLook.MAX_SCALE),
+                    fullScale = o.optDouble("toolbar_full_scale", 1.0).toFloat()
+                        .coerceIn(ToolbarLook.MIN_SCALE, ToolbarLook.MAX_SCALE),
                 ),
                 hideWindowDecoration = o.optBoolean("hide_window_decoration", false),
                 pageColor = if (o.isNull("page_color")) null else Rgba.fromHex(o.optString("page_color")),

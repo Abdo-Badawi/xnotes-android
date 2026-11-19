@@ -79,6 +79,7 @@ import com.xnotes.core.util.NameTemplate
 import com.xnotes.settings.Preferences
 import com.xnotes.settings.MaterialStyle
 import com.xnotes.settings.CornerStyle
+import com.xnotes.settings.ToolbarLook
 import com.xnotes.settings.ToolbarPosition
 import com.xnotes.settings.ToolbarSize
 import com.xnotes.settings.MaterialColourMode
@@ -86,6 +87,7 @@ import com.xnotes.settings.SwatchRole
 import com.xnotes.ui.icons.XnotesIcons
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
+import kotlin.math.roundToInt
 
 /** One-tap filename templates offered beside the free-text field. */
 private val NAME_TEMPLATE_PRESETS = listOf(
@@ -550,6 +552,15 @@ fun PreferencesPane(
                     Chip(stringResource(label), look.size == size) { updateHome(prefs.copy(toolbarLook = look.copy(size = size))) }
                 }
             }
+            FieldLabel(stringResource(R.string.pref_toolbar_full_size, (look.fullScale * 100).roundToInt()))
+            Slider(
+                value = look.fullScale,
+                onValueChange = {
+                    updateHome(prefs.copy(toolbarLook = prefs.toolbarLook.copy(fullScale = it)))
+                },
+                valueRange = ToolbarLook.MIN_SCALE..ToolbarLook.MAX_SCALE,
+                modifier = Modifier.width(280.dp),
+            )
             FieldLabel(stringResource(R.string.pref_toolbar_colours_n, editor.toolbarColorCount))
             Slider(
                 value = editor.toolbarColorCount.toFloat(),
@@ -590,6 +601,15 @@ fun PreferencesPane(
                 stringResource(R.string.pref_toolbar_short_help),
                 color = palette.textDim.toComposeColor(),
                 fontSize = 12.sp,
+            )
+            FieldLabel(stringResource(R.string.pref_toolbar_short_size, (look.shortScale * 100).roundToInt()))
+            Slider(
+                value = look.shortScale,
+                onValueChange = {
+                    updateHome(prefs.copy(toolbarLook = prefs.toolbarLook.copy(shortScale = it)))
+                },
+                valueRange = ToolbarLook.MIN_SCALE..ToolbarLook.MAX_SCALE,
+                modifier = Modifier.width(280.dp),
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,

@@ -11,7 +11,16 @@ data class ToolbarLook(
     /** Floating bar anchor across its free space, 0 (left/top edge) .. 1 (right/bottom edge). */
     val anchorX: Float = 0.5f,
     val anchorY: Float = 0.9f,
-)
+    /** Multiplier on the floating bar's compact row, on top of [size]. */
+    val shortScale: Float = 1f,
+    /** Multiplier on the floating bar's expanded shape, on top of [size]. */
+    val fullScale: Float = 1f,
+) {
+    companion object {
+        const val MIN_SCALE = 0.7f
+        const val MAX_SCALE = 1.6f
+    }
+}
 
 /** The three shapes of the floating toolbar: one icon, the compact tool row, or the full bar. */
 enum class ToolbarState(val id: String) {

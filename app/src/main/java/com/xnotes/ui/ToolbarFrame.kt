@@ -58,11 +58,25 @@ internal data class BarMetrics(
     val thickness: Dp get() = button + 8.dp
 }
 
-internal fun barMetrics(size: ToolbarSize): BarMetrics = when (size) {
-    ToolbarSize.COMPACT -> BarMetrics(36.dp, 30.dp, 20.dp, 24.dp, 22.dp, 11.sp)
-    ToolbarSize.REGULAR -> BarMetrics(42.dp, 34.dp, 22.dp, 28.dp, 26.dp, 12.sp)
-    ToolbarSize.COMFORTABLE -> BarMetrics(50.dp, 40.dp, 26.dp, 34.dp, 30.dp, 13.sp)
+internal fun barMetrics(size: ToolbarSize, scale: Float = 1f): BarMetrics {
+    val base = when (size) {
+        ToolbarSize.COMPACT -> BarMetrics(36.dp, 30.dp, 20.dp, 24.dp, 22.dp, 11.sp)
+        ToolbarSize.REGULAR -> BarMetrics(42.dp, 34.dp, 22.dp, 28.dp, 26.dp, 12.sp)
+        ToolbarSize.COMFORTABLE -> BarMetrics(50.dp, 40.dp, 26.dp, 34.dp, 30.dp, 13.sp)
+    }
+    if (scale == 1f) return base
+    return base.copy(
+        button = base.button * scale,
+        circle = base.circle * scale,
+        icon = base.icon * scale,
+        swatch = base.swatch * scale,
+        rule = base.rule * scale,
+        label = (base.label.value * scale).sp,
+    )
 }
+
+/** Multiplier the floating bar's current shape applies over the base [ToolbarSize]. */
+internal val LocalToolbarScale = staticCompositionLocalOf { 1f }
 
 internal val LocalBar = staticCompositionLocalOf { barMetrics(ToolbarSize.REGULAR) }
 
@@ -102,7 +116,7 @@ internal fun ColumnScope.ToolbarAround(
         }
         return
     }
-    val depth = barMetrics(look.size).thickness + FLOAT_MARGIN
+    val depth = barMetrics(look.size, LocalToolbarScale.current).thickness + FLOAT_MARGIN
     val px = with(LocalDensity.current) { depth.toPx().toDouble() }
     val position = look.position
     SideEffect {
@@ -136,7 +150,7 @@ internal fun ToolbarFrame(
     content: @Composable () -> Unit,
 ) {
     val look = LocalToolbarLook.current
-    val bar = barMetrics(look.size).copy(vertical = look.position.vertical)
+    val bar = barMetrics(look.size, LocalToolbarScale.current).copy(vertical = look.position.vertical)
     val glide = remember { ToolGlide() }
     val palette = LocalPalette.current
     val shape = MaterialTheme.shapes.extraLarge
