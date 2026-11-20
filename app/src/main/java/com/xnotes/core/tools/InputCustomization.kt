@@ -90,6 +90,14 @@ data class InputCustomization(
 
     val hasAnySignature: Boolean get() = write != null || pan != null || erase != null || altWrite != null
 
+    /** Whether any recorded function can match a touch with this pointer count. */
+    fun hasSignatureFor(pointerCount: Int): Boolean =
+        InputFunction.entries.any { signatureFor(it)?.pointerCount == pointerCount }
+
+    /** Whether a recorded function needs more than one pointer. */
+    val hasMultiPointerSignature: Boolean
+        get() = InputFunction.entries.any { (signatureFor(it)?.pointerCount ?: 0) > 1 }
+
     /** The closest function whose recording accepts this touch, or null when nothing matches. */
     fun match(pointerCount: Int, size: Float): InputMatch? {
         if (!enabled) return null

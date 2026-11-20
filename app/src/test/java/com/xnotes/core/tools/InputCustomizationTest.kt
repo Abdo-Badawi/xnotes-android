@@ -182,6 +182,20 @@ class InputCustomizationTest {
     }
 
     @Test
+    fun pointerCountHelpersSeeRecordedFunctions() {
+        val custom = InputCustomization(
+            enabled = true,
+            write = signature(10f, 20f, 1),
+            pan = signature(30f, 40f, 2),
+        )
+        assertTrue(custom.hasSignatureFor(1))
+        assertTrue(custom.hasSignatureFor(2))
+        assertFalse(custom.hasSignatureFor(3))
+        assertTrue(custom.hasMultiPointerSignature)
+        assertFalse(InputCustomization(write = signature(10f, 20f, 1)).hasMultiPointerSignature)
+    }
+
+    @Test
     fun jsonRoundTripKeepsEverySignature() {
         val original = InputCustomization(
             enabled = true,

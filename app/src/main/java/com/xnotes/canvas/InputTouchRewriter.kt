@@ -33,6 +33,7 @@ class InputTouchRewriter {
         onAltColor: (Rgba?) -> Unit,
         onPan: (Boolean) -> Unit,
         onMultiPan: (Boolean) -> Unit,
+        classifySize: Float? = null,
     ): MotionEvent? {
         if (!customization.enabled) {
             latch.clear()
@@ -46,7 +47,7 @@ class InputTouchRewriter {
             // A pointer keeps the function it was first given; only a pointer seen for the first
             // time is classified. On POINTER_DOWN the earlier fingers are already latched (or were
             // already treated as plain fingers), so this never reclassifies a live pointer.
-            val size = gestureSize(event)
+            val size = classifySize ?: gestureSize(event)
             for (i in 0 until event.pointerCount) {
                 if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
                 val id = event.getPointerId(i)
@@ -104,19 +105,22 @@ class InputTouchRewriter {
      * a multi-finger gesture is judged by its biggest contact, not by whichever finger happened to
      * be the action pointer.
      */
-    private fun gestureSize(event: MotionEvent): Float {
-        var size = 0f
-        for (i in 0 until event.pointerCount) {
-            if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
-            size = maxOf(size, contactSize(event, i))
-        }
-        return size
-    }
+    private fun gestureSize(event: MotionEvent): Float = contactSize(event)
 
-    /** The contact size the recording rules use: touchMinor, or touchMajor where minor is absent. */
-    private fun contactSize(event: MotionEvent, index: Int): Float {
-        val minor = event.getTouchMinor(index)
-        return if (minor > 0f) minor else event.getTouchMajor(index)
+    companion object {
+        /**
+         * The contact size the recording rules use: the largest touchMinor (or touchMajor where
+         * minor is absent) across the fingers in this event.
+         */
+        fun contactSize(event: MotionEvent): Float {
+            var size = 0f
+            for (i in 0 until event.pointerCount) {
+                if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
+                val minor = event.getTouchMinor(i)
+                size = maxOf(size, if (minor > 0f) minor else event.getTouchMajor(i))
+            }
+            return size
+        }
     }
 
     @Suppress("DEPRECATION") // the historical size/tool/axis getters have no non-deprecated twin

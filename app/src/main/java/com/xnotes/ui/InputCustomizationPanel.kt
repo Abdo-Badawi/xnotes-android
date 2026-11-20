@@ -205,16 +205,13 @@ class InputCustomizationState(
         if (testing) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                    // Judge the whole gesture by its largest finger contact, exactly as the
-                    // runtime classifier does.
-                    var size = 0f
-                    for (i in 0 until event.pointerCount) {
-                        if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
-                        val minor = event.getTouchMinor(i)
-                        size = maxOf(size, if (minor > 0f) minor else event.getTouchMajor(i))
-                    }
-                    testMatch = read().match(event.pointerCount, size)
+                    // Contact sizes ramp up after the first sample on some panels, so keep
+                    // looking as the gesture develops instead of judging only the down sample.
+                    testMatch = read().match(event.pointerCount, InputTouchRewriter.contactSize(event))
                     tested = true
+                }
+                MotionEvent.ACTION_MOVE -> if (testMatch == null) {
+                    testMatch = read().match(event.pointerCount, InputTouchRewriter.contactSize(event))
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> testing = false
             }
@@ -264,7 +261,8 @@ class InputCustomizationState(
         onAltColor: (Rgba?) -> Unit,
         onPan: (Boolean) -> Unit,
         onMultiPan: (Boolean) -> Unit,
-    ): MotionEvent? = rewriter.rewrite(event, read(), onAltColor, onPan, onMultiPan)
+        classifySize: Float? = null,
+    ): MotionEvent? = rewriter.rewrite(event, read(), onAltColor, onPan, onMultiPan, classifySize)
 }
 
 /** The in-window panel: a scrim over the pane, so the activity still sees every touch it records. */

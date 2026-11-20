@@ -6,6 +6,8 @@ import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.Display
 import android.view.KeyEvent
@@ -94,6 +96,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.xnotes.R
+import com.xnotes.canvas.InputTouchRewriter
 import com.xnotes.canvas.StylusButtonLatch
 import com.xnotes.ui.Editor
 import com.xnotes.ui.Toolbar
@@ -108,6 +111,13 @@ import kotlinx.coroutines.launch
 
 /** How long the maths waits for the font bytes it measures with before going without. */
 private const val MATH_FONT_WAIT_MS = 1500L
+
+/**
+ * How long a finger's first samples are held while its contact size settles. Some panels report a
+ * small contact on DOWN and grow it over the next few frames; classification needs the settled
+ * size, not the first one.
+ */
+private const val INPUT_CLASSIFY_MS = 90L
 
 /** Whether the display has a camera cutout (notch/hole-punch). False below API 29, which has no
  *  cutout API; such devices fall back to fullscreen by default. Also false for a context with no
@@ -223,6 +233,12 @@ class EditorActivity : ComponentActivity() {
     private val eyedropperTouch by lazy { com.xnotes.ui.EyedropperTouch(window) }
     private val superTouch: (MotionEvent) -> Boolean = { super.dispatchTouchEvent(it) }
 
+    private val inputBuffer = ArrayList<MotionEvent>()
+    private val inputBufferMaxByCount = HashMap<Int, Float>()
+    private val inputBufferHandler = Handler(Looper.getMainLooper())
+    private val inputBufferTimeout = Runnable { flushInputBuffer() }
+    private var inputBufferActive = false
+
     // Older Samsung builds (seen on a Tab S6 Lite, Android 13; gone by Android 15) tag a stylus
     // stroke made with the S-Pen button held with proprietary action codes instead of DOWN/MOVE/UP,
     // so the view tree never opens a touch target and the whole stroke is dropped. Rewrite them
@@ -239,18 +255,102 @@ class EditorActivity : ComponentActivity() {
         // Touches on the open panel are ordinary UI; only recording/testing (handled above) needs them.
         val panelOpen = active?.inputCustomization?.open == true
         val featureOn = !panelOpen && active?.preferences?.inputCustomization?.enabled == true
-        if (!samsung && !featureOn) return eyedropperTouch.dispatch(ev, superTouch)
+        if (!samsung && !featureOn) {
+            flushInputBuffer()
+            return eyedropperTouch.dispatch(ev, superTouch)
+        }
 
+        if (featureOn && !samsung) {
+            if (inputBufferActive) {
+                bufferInput(ev)
+                return true
+            }
+            if (shouldBufferInput(requireNotNull(active), ev)) {
+                beginInputBuffer(requireNotNull(active), ev)
+                return true
+            }
+        }
+
+        return dispatchClassified(ev, active, samsung, standard)
+    }
+
+    /**
+     * Some touch panels report a small contact on DOWN and grow it over the next few frames. The
+     * recorder stores the grown size, so a finger whose first sample is below every recording would
+     * never match if it were classified immediately. Hold the opening samples briefly, classify
+     * with the largest size seen, then replay them with the resulting tool type.
+     */
+    private fun shouldBufferInput(active: Editor, ev: MotionEvent): Boolean {
+        if (ev.actionMasked != MotionEvent.ACTION_DOWN &&
+            ev.actionMasked != MotionEvent.ACTION_POINTER_DOWN
+        ) {
+            return false
+        }
+        if (ev.getToolType(ev.actionIndex) != MotionEvent.TOOL_TYPE_FINGER) return false
+        val customization = active.preferences.inputCustomization
+        if (!customization.hasSignatureFor(ev.pointerCount)) return false
+        val size = InputTouchRewriter.contactSize(ev)
+        return customization.match(ev.pointerCount, size) == null
+    }
+
+    private fun beginInputBuffer(active: Editor, ev: MotionEvent) {
+        inputBufferActive = true
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        bufferInput(ev)
+        inputBufferHandler.postDelayed(inputBufferTimeout, INPUT_CLASSIFY_MS)
+    }
+
+    private fun bufferInput(ev: MotionEvent) {
+        val copy = MotionEvent.obtain(ev)
+        inputBuffer.add(copy)
+        val count = copy.pointerCount
+        val size = InputTouchRewriter.contactSize(copy)
+        val peak = maxOf(inputBufferMaxByCount[count] ?: 0f, size)
+        inputBufferMaxByCount[count] = peak
+        val customization = editor?.active?.preferences?.inputCustomization
+        val matched = customization?.match(count, peak) != null
+        val ended = copy.actionMasked == MotionEvent.ACTION_UP ||
+            copy.actionMasked == MotionEvent.ACTION_CANCEL
+        // Let a second finger join before committing to a one-finger function when this device also
+        // records multi-finger gestures; a two-finger Pan must not lose to its first finger.
+        val waitForMorePointers = count == 1 && customization?.hasMultiPointerSignature == true
+        if (ended || (matched && !waitForMorePointers)) flushInputBuffer()
+    }
+
+    private fun flushInputBuffer() {
+        inputBufferHandler.removeCallbacks(inputBufferTimeout)
+        if (!inputBufferActive) return
+        inputBufferActive = false
+        val events = ArrayList(inputBuffer)
+        val peaks = HashMap(inputBufferMaxByCount)
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        for (ev in events) {
+            val standard = standardPenAction(ev.actionMasked)
+            val samsung = standard >= 0 && ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
+            dispatchClassified(ev, editor?.active, samsung, standard, peaks[ev.pointerCount])
+            ev.recycle()
+        }
+    }
+
+    private fun dispatchClassified(
+        ev: MotionEvent,
+        active: Editor?,
+        samsung: Boolean,
+        standard: Int,
+        classifySize: Float? = null,
+    ): Boolean {
         // Reclassify only pointers the platform reported as fingers; stylus/eraser pointers pass
         // through untouched. A null result means no tool type changed, so the original event is
         // dispatched exactly as before, without an allocation.
-        val classified = if (featureOn) {
-            val a = requireNotNull(active)
-            a.inputCustomization.rewrite(
+        val classified = if (active != null && !samsung) {
+            active.inputCustomization.rewrite(
                 ev,
-                onAltColor = { a.stageInputStrokeColor(it) },
-                onPan = { if (it) a.armInputPan() else a.resetInputPan() },
-                onMultiPan = { if (it) a.armInputMultiPan() else a.resetInputMultiPan() },
+                onAltColor = { active.stageInputStrokeColor(it) },
+                onPan = { if (it) active.armInputPan() else active.resetInputPan() },
+                onMultiPan = { if (it) active.armInputMultiPan() else active.resetInputMultiPan() },
+                classifySize = classifySize,
             )
         } else {
             null
