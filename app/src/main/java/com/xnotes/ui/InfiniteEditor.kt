@@ -680,7 +680,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
 
     override fun copySelectionAsImage() {
         val bmp = renderSelectionBitmap()
-        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "xnotes selection")
+        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "Pixora selection")
         onMessage?.invoke(appContext.getString(if (ok) R.string.image_copied else R.string.err_copy_image), null)
     }
 

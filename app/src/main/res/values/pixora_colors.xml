@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="pixora_splash_background">#202D84</color>
+    <color name="pixora_navy_start">#303FA0</color>
+    <color name="pixora_navy_end">#111B68</color>
+    <color name="pixora_accent">#27D6E1</color>
+</resources>

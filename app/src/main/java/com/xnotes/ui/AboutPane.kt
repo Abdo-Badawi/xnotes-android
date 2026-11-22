@@ -100,9 +100,9 @@ fun AboutPane() {
             Modifier.widthIn(max = 420.dp).fillMaxWidth().padding(top = 16.dp, bottom = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            AppIconImage(icon, 72.dp, "xnotes", Modifier.holdForIconPicker(openPicker))
+            AppIconImage(icon, 72.dp, "Pixora", Modifier.holdForIconPicker(openPicker))
             Spacer(Modifier.height(16.dp))
-            Text("xnotes", color = palette.text.toComposeColor(), fontWeight = FontWeight.Bold, fontSize = 24.sp)
+            Text("Pixora", color = palette.text.toComposeColor(), fontWeight = FontWeight.Bold, fontSize = 24.sp)
             Spacer(Modifier.height(5.dp))
             Text(
                 stringResource(R.string.app_tagline),
@@ -214,7 +214,7 @@ private fun RowScope.AboutButton(icon: ImageVector, label: String, onClick: () -
 private fun copyVersion(ctx: Context, version: String) {
     runCatching {
         val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clip.setPrimaryClip(ClipData.newPlainText("xnotes version", "xnotes $version"))
+        clip.setPrimaryClip(ClipData.newPlainText("Pixora version", "Pixora $version"))
         Toast.makeText(ctx, ctx.getString(R.string.version_copied), Toast.LENGTH_SHORT).show()
     }
 }

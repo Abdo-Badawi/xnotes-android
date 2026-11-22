@@ -579,7 +579,7 @@ private fun itemIcon(item: ToolbarItem): ImageVector = when (item) {
     ToolbarItem.TAPER -> ImageVector.vectorResource(R.drawable.ic_stroke_taper)
     ToolbarItem.HIGHLIGHTER -> ImageVector.vectorResource(R.drawable.ic_stroke_highlighter)
     ToolbarItem.ERASER -> XnotesIcons.eraser
-    ToolbarItem.CLEAR_WRITINGS -> XnotesIcons.trash
+    ToolbarItem.CLEAR_WRITINGS -> XnotesIcons.closeBold
     ToolbarItem.PAN -> XnotesIcons.pan
     ToolbarItem.SELECT -> XnotesIcons.select
     ToolbarItem.LASSO -> XnotesIcons.lasso

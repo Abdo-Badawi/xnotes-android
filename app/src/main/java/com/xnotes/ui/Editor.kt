@@ -1400,7 +1400,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         withPdfSelectionText { text ->
             val cm = appContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                 as? android.content.ClipboardManager ?: return@withPdfSelectionText
-            runCatching { cm.setPrimaryClip(android.content.ClipData.newPlainText("xnotes text", text)) }
+            runCatching { cm.setPrimaryClip(android.content.ClipData.newPlainText("Pixora text", text)) }
         }
         pdfText.clear()
     }
@@ -1911,7 +1911,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     fun copyScreenshotAsImage() {
         val rect = controller.screenshotRect ?: return
         val bmp = renderRegionBitmap(rect)
-        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "xnotes capture")
+        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "Pixora capture")
         controller.clearScreenshot()
         controller.switchBackAfterScreenshot() // return to the previous pen, like the eraser
         message = if (ok) appContext.getString(R.string.image_copied) else appContext.getString(R.string.err_copy_image)
@@ -1975,7 +1975,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     override fun copySelectionAsImage() {
         val bmp = renderSelectionBitmap()
-        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "xnotes selection")
+        val ok = bmp != null && com.xnotes.platform.SystemClipboard.putImage(appContext, bmp, "Pixora selection")
         message = appContext.getString(if (ok) R.string.image_copied else R.string.err_copy_image)
     }
 
@@ -8932,7 +8932,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         val text = CellIndex(flow.paragraphs).textOf(flow.paragraphs, sel)
         val cm = appContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
             as? android.content.ClipboardManager ?: return
-        cm.setPrimaryClip(android.content.ClipData.newPlainText("xnotes text", text))
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("Pixora text", text))
         if (cut) flowText.replaceExternal(sel, "")
     }
 

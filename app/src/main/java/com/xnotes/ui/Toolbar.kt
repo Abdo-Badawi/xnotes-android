@@ -247,7 +247,7 @@ private fun ToolbarItemView(
 
         ToolbarItem.CLEAR_WRITINGS -> {
             var clearOpen by remember { mutableStateOf(false) }
-            ToolbarIcon(XnotesIcons.trash, stringResource(R.string.clear_writings)) { clearOpen = true }
+            ToolbarIcon(XnotesIcons.closeBold, stringResource(R.string.clear_writings)) { clearOpen = true }
             if (clearOpen) AlertDialog(
                 onDismissRequest = { clearOpen = false },
                 title = { Text(stringResource(R.string.clear_writings)) },

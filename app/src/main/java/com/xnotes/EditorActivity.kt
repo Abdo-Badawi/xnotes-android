@@ -195,10 +195,18 @@ class EditorActivity : ComponentActivity() {
             val ed = remember { Editor(context).also { editor = it } }
             LaunchedEffect(ed.fullscreen) { applyFullscreen(ed.fullscreen) }
             var ready by remember { mutableStateOf(false) }
+            var splashElapsed by remember { mutableStateOf(false) }
+            var splashShown by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
-                ed.restoreSession() // heavy load off-thread; the system splash stays up meanwhile
+                ed.restoreSession() // heavy load off-thread; the branded splash covers it meanwhile
                 ready = true
                 ed.prewarmBackstage() // warm recents/explorer caches so the first backstage open is instant
+            }
+            LaunchedEffect(splashShown) {
+                if (splashShown) {
+                    delay(2400)
+                    splashElapsed = true
+                }
             }
             XnotesTheme(ed.palette, ed.cornerStyle) {
                 CompositionLocalProvider(com.xnotes.ui.LocalToolbarLook provides ed.toolbarLook) {
@@ -211,7 +219,16 @@ class EditorActivity : ComponentActivity() {
                                 importUri = pendingImport,
                                 onImportConsumed = { pendingImport = null },
                             )
-                            SideEffect { launched = true }
+                        }
+                        // The system splash lasts until the first draw; this branded poster takes over
+                        // immediately and stays for a moment so a fast restore does not flash past it.
+                        SideEffect { launched = true }
+                        AnimatedVisibility(
+                            visible = !ready || !splashElapsed,
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                        ) {
+                            com.xnotes.ui.PixoraSplash(onShown = { splashShown = true })
                         }
                         com.xnotes.ui.EyedropperOverlay()
                     }
@@ -1097,7 +1114,7 @@ private fun EditorScreen(
                 onImportCodeTheme = { importCodeThemeLauncher.launch(arrayOf("*/*")) },
                 onImportFont = { importFontLauncher.launch(arrayOf("*/*")) },
                 onBackup = { export ->
-                    if (export) exportSettingsLauncher.launch("xnotes-settings-${java.time.LocalDate.now()}.zip")
+                    if (export) exportSettingsLauncher.launch("Pixora-settings-${java.time.LocalDate.now()}.zip")
                     else importSettingsLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
                 },
                 onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },

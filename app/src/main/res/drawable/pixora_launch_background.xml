@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pre-Android-12 launch screen: solid navy + centred logo -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/pixora_splash_background" />
+    <item>
+        <bitmap android:gravity="center" android:src="@drawable/pixora_splash_icon" />
+    </item>
+</layer-list>
