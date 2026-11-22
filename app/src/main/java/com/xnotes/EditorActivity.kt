@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -98,6 +99,7 @@ import androidx.lifecycle.lifecycleScope
 import com.xnotes.R
 import com.xnotes.canvas.InputTouchRewriter
 import com.xnotes.canvas.StylusButtonLatch
+import com.xnotes.core.tools.InputFunction
 import com.xnotes.ui.Editor
 import com.xnotes.ui.Toolbar
 import com.xnotes.ui.ToolbarAround
@@ -118,6 +120,9 @@ private const val MATH_FONT_WAIT_MS = 1500L
  * size, not the first one.
  */
 private const val INPUT_CLASSIFY_MS = 90L
+
+/** Debug-only transition log for the provisional-ink path; per-move logging is deliberately absent. */
+private const val INPUT_LOG_TAG = "xnotes.input"
 
 /** Whether the display has a camera cutout (notch/hole-punch). False below API 29, which has no
  *  cutout API; such devices fall back to fullscreen by default. Also false for a context with no
@@ -253,8 +258,19 @@ class EditorActivity : ComponentActivity() {
     private val inputBuffer = ArrayList<MotionEvent>()
     private val inputBufferMaxByCount = HashMap<Int, Float>()
     private val inputBufferHandler = Handler(Looper.getMainLooper())
-    private val inputBufferTimeout = Runnable { flushInputBuffer() }
+    private val inputBufferTimeout = Runnable {
+        if (provisionalActive) confirmProvisional() else flushInputBuffer()
+    }
     private var inputBufferActive = false
+
+    // A finger whose contact size has not settled still draws at once. The copies above become a
+    // replay log: if the settled size resolves to erase/pan/alt-write, the provisional ink is
+    // discarded and the held events are replayed with the function the classifier chose.
+    private var provisionalActive = false
+    private var provisionalPointerId = -1
+    private var provisionalStartNs = 0L
+
+    private val inputDebug: Boolean get() = Log.isLoggable(INPUT_LOG_TAG, Log.DEBUG)
 
     // Older Samsung builds (seen on a Tab S6 Lite, Android 13; gone by Android 15) tag a stylus
     // stroke made with the S-Pen button held with proprietary action codes instead of DOWN/MOVE/UP,
@@ -273,13 +289,25 @@ class EditorActivity : ComponentActivity() {
         val panelOpen = active?.inputCustomization?.open == true
         val featureOn = !panelOpen && active?.preferences?.inputCustomization?.enabled == true
         if (!samsung && !featureOn) {
+            val wasProvisional = provisionalActive
+            cancelProvisional()
+            // The view tree was mid-provisional-gesture; give it the cancel it is owed.
+            if (wasProvisional) sendCancelLike(ev)
             flushInputBuffer()
             return eyedropperTouch.dispatch(ev, superTouch)
         }
 
         if (featureOn && !samsung) {
+            if (provisionalActive) {
+                handleProvisional(ev, active)
+                return true
+            }
             if (inputBufferActive) {
                 bufferInput(ev)
+                return true
+            }
+            if (shouldProvisional(requireNotNull(active), ev)) {
+                beginProvisional(requireNotNull(active), ev)
                 return true
             }
             if (shouldBufferInput(requireNotNull(active), ev)) {
@@ -292,10 +320,29 @@ class EditorActivity : ComponentActivity() {
     }
 
     /**
+     * Whether this down can draw provisionally while its contact size settles. It is deliberately
+     * narrow: a stroke tool, a finger that would draw anyway (finger-draw on, which the app turns on
+     * for panels that report the pen as a finger), no selection or text/draft the press could grab
+     * instead, and no recorded signature already matching the first size. Everything else keeps the
+     * exact classification buffer below.
+     */
+    private fun shouldProvisional(active: Editor, ev: MotionEvent): Boolean {
+        if (ev.actionMasked != MotionEvent.ACTION_DOWN) return false
+        if (ev.getToolType(ev.actionIndex) != MotionEvent.TOOL_TYPE_FINGER) return false
+        if (com.xnotes.ui.Eyedropper.target != null) return false // the eyedropper owns this touch
+        if (!active.canBeginProvisionalInput()) return false
+        val customization = active.preferences.inputCustomization
+        if (!customization.enabled) return false
+        if (!customization.hasSignatureFor(1)) return false
+        val size = InputTouchRewriter.contactSize(ev)
+        return customization.match(1, size) == null
+    }
+
+    /**
      * Some touch panels report a small contact on DOWN and grow it over the next few frames. The
      * recorder stores the grown size, so a finger whose first sample is below every recording would
-     * never match if it were classified immediately. Hold the opening samples briefly, classify
-     * with the largest size seen, then replay them with the resulting tool type.
+     * never match if it were classified immediately. This is the exact path for input that cannot
+     * be provisionally drawn; the provisional path above renders while the size settles.
      */
     private fun shouldBufferInput(active: Editor, ev: MotionEvent): Boolean {
         if (ev.actionMasked != MotionEvent.ACTION_DOWN &&
@@ -308,6 +355,159 @@ class EditorActivity : ComponentActivity() {
         if (!customization.hasSignatureFor(ev.pointerCount)) return false
         val size = InputTouchRewriter.contactSize(ev)
         return customization.match(ev.pointerCount, size) == null
+    }
+
+    /** Start drawing at once as Write, and keep a replay log until the size resolves. */
+    private fun beginProvisional(active: Editor, ev: MotionEvent) {
+        val size = InputTouchRewriter.contactSize(ev)
+        provisionalActive = true
+        provisionalPointerId = ev.getPointerId(0)
+        provisionalStartNs = System.nanoTime()
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        inputBuffer.add(MotionEvent.obtain(ev))
+        inputBufferMaxByCount[1] = size
+        inputBufferHandler.postDelayed(inputBufferTimeout, INPUT_CLASSIFY_MS)
+        active.beginProvisionalInput()
+        if (inputDebug) {
+            val lag = android.os.SystemClock.uptimeMillis() - ev.eventTime
+            Log.d(INPUT_LOG_TAG, "provisional begin size=$size dispatchLag=${lag}ms")
+        }
+        dispatchClassified(
+            ev, active, samsung = false, standard = -1, classifySize = size,
+            forceFirstPointerFunction = InputFunction.WRITE,
+        )
+    }
+
+    private fun handleProvisional(ev: MotionEvent, active: Editor?) {
+        if (active == null) {
+            cancelProvisional()
+            return
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            cancelProvisional()
+            // The view tree and Compose were promised a cancel; pass it on after the rollback.
+            superTouch(ev)
+            return
+        }
+        val copy = MotionEvent.obtain(ev)
+        inputBuffer.add(copy)
+        val count = copy.pointerCount
+        val size = InputTouchRewriter.contactSize(copy)
+        val peak = maxOf(inputBufferMaxByCount[count] ?: 0f, size)
+        inputBufferMaxByCount[count] = peak
+
+        val customization = active.preferences.inputCustomization
+        val lifting = ev.actionMasked == MotionEvent.ACTION_POINTER_UP
+        val liftOfStroke = lifting && ev.getPointerId(ev.actionIndex) == provisionalPointerId
+        // A pointer-up lowers the count and can spuriously match a one-finger recording; only judge
+        // the gesture when the writing pointer itself lifts, or on a move/down/up.
+        val match = if (lifting && !liftOfStroke) null else customization.match(count, peak)
+        val multi = match != null && match.signature.pointerCount > 1
+        val resolved = match?.function
+        when {
+            resolved != null && (resolved != InputFunction.WRITE || multi) -> {
+                if (inputDebug) {
+                    val ms = (System.nanoTime() - provisionalStartNs) / 1_000_000
+                    Log.d(INPUT_LOG_TAG, "provisional resolve -> $resolved in ${ms}ms, $count ptr, ${inputBuffer.size} events")
+                }
+                resolveProvisional(active, resolved)
+            }
+            resolved == InputFunction.WRITE -> {
+                confirmProvisional(active)
+                dispatchClassified(
+                    ev, active, false, -1, classifySize = peak,
+                    forceFirstPointerFunction = InputFunction.WRITE,
+                )
+            }
+            ev.actionMasked == MotionEvent.ACTION_UP || liftOfStroke -> {
+                if (inputDebug) {
+                    val ms = (System.nanoTime() - provisionalStartNs) / 1_000_000
+                    Log.d(INPUT_LOG_TAG, "provisional confirm in ${ms}ms (no settled match)")
+                }
+                confirmProvisional(active)
+                dispatchClassified(
+                    ev, active, false, -1, classifySize = peak,
+                    forceFirstPointerFunction = InputFunction.WRITE,
+                )
+            }
+            else -> dispatchClassified(
+                ev, active, false, -1, classifySize = peak,
+                forceFirstPointerFunction = InputFunction.WRITE,
+            )
+        }
+    }
+
+    /**
+     * The classifier chose a different function: drop the provisional ink, forget every provisional
+     * latch, and replay the held events from the original down through the exact classified path.
+     * Erase therefore covers the whole path, and a multi-finger Pan starts from its original
+     * centroid, not from wherever the first finger had reached.
+     */
+    private fun resolveProvisional(active: Editor, function: InputFunction) {
+        val events = ArrayList(inputBuffer)
+        val peaks = HashMap(inputBufferMaxByCount)
+        inputBufferHandler.removeCallbacks(inputBufferTimeout)
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        provisionalActive = false
+        // The provisional events already reached the view tree. Cancel that gesture stream before
+        // replaying a fresh DOWN, so Compose/AndroidView never see a second down for the same
+        // pointer without an intervening cancel.
+        sendCancelLike(events.lastOrNull())
+        active.cancelProvisionalInput()
+        active.inputCustomization.resetClassification()
+        try {
+            for (ev in events) {
+                val standard = standardPenAction(ev.actionMasked)
+                val samsung = standard >= 0 && ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
+                dispatchClassified(
+                    ev, active, samsung, standard, peaks[ev.pointerCount],
+                    forceFirstPointerFunction = function,
+                )
+            }
+        } finally {
+            for (ev in events) ev.recycle()
+        }
+    }
+
+    /** Send a cancel for a provisional gesture that already reached the view tree. */
+    private fun sendCancelLike(ev: MotionEvent?) {
+        if (ev == null) return
+        val cancel = MotionEvent.obtain(ev)
+        try {
+            cancel.action = MotionEvent.ACTION_CANCEL
+            superTouch(cancel)
+        } finally {
+            cancel.recycle()
+        }
+    }
+
+    /** Keep the provisional stroke and stop replaying: the size settled as (or stayed) a write. */
+    private fun confirmProvisional(active: Editor? = editor?.active) {
+        if (!provisionalActive) return
+        inputBufferHandler.removeCallbacks(inputBufferTimeout)
+        for (ev in inputBuffer) ev.recycle()
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        provisionalActive = false
+        active?.confirmProvisionalInput()
+    }
+
+    /** Discard the provisional stroke and its replay log; nothing is committed. */
+    private fun cancelProvisional() {
+        if (provisionalActive) {
+            inputBufferHandler.removeCallbacks(inputBufferTimeout)
+            for (ev in inputBuffer) ev.recycle()
+            inputBuffer.clear()
+            inputBufferMaxByCount.clear()
+            provisionalActive = false
+            if (inputDebug) Log.d(INPUT_LOG_TAG, "provisional cancelled")
+        }
+        editor?.active?.cancelProvisionalInput()
+        // The cancel above bypassed the rewriter, so drop any provisional latch it still holds for
+        // this pointer id; otherwise the next gesture on the same id would inherit it.
+        editor?.active?.inputCustomization?.resetClassification()
     }
 
     private fun beginInputBuffer(active: Editor, ev: MotionEvent) {
@@ -357,6 +557,7 @@ class EditorActivity : ComponentActivity() {
         samsung: Boolean,
         standard: Int,
         classifySize: Float? = null,
+        forceFirstPointerFunction: InputFunction? = null,
     ): Boolean {
         // Reclassify only pointers the platform reported as fingers; stylus/eraser pointers pass
         // through untouched. A null result means no tool type changed, so the original event is
@@ -368,6 +569,7 @@ class EditorActivity : ComponentActivity() {
                 onPan = { if (it) active.armInputPan() else active.resetInputPan() },
                 onMultiPan = { if (it) active.armInputMultiPan() else active.resetInputMultiPan() },
                 classifySize = classifySize,
+                forceFirstPointerFunction = forceFirstPointerFunction,
             )
         } else {
             null
@@ -419,6 +621,7 @@ class EditorActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelProvisional() // never leave provisional ink or its replay log behind
         editor?.retire() // the next activity waits for the saves this one began on pause
         super.onDestroy()
     }

@@ -13,10 +13,23 @@ import com.xnotes.core.tools.InputGestureLatch
  * classified as Write becomes a stylus, Erase an eraser, and Pan stays a finger. Real stylus and
  * eraser pointers pass through exactly as the platform reported them. Historical samples are
  * replayed with [MotionEvent.addBatch] so a fast stroke never loses its intermediate points.
+ *
+ * [forceFirstPointerFunction] lets the caller start a provisional stroke (Write) before the
+ * contact size has settled, and later replay the held events with the function classification
+ * finally resolved. It applies only to the first pointer, only when that pointer is not already
+ * latched, so a live pointer is never reclassified twice.
  */
 class InputTouchRewriter {
 
     private val latch = InputGestureLatch()
+
+    // Scratch arrays reused across events: MotionEvent.obtain and addBatch copy their contents
+    // into the event, so the arrays are free to be refilled for the next one. Sized generously
+    // (Android devices report far fewer pointers); an unusually wide event falls back to fresh
+    // arrays below.
+    private val props = Array(MAX_POINTERS) { MotionEvent.PointerProperties() }
+    private val coords = Array(MAX_POINTERS) { MotionEvent.PointerCoords() }
+    private val batchCoords = Array(MAX_POINTERS) { MotionEvent.PointerCoords() }
 
     fun reset() = latch.clear()
 
@@ -26,6 +39,10 @@ class InputTouchRewriter {
      * touch, whether the pointer that just landed is a Pan, and whether that Pan is a multi-finger
      * one that must keep panning from the centroid. When nothing is latched for a pointer it keeps
      * the platform's tool type.
+     *
+     * [forceFirstPointerFunction] is the provisional/authoritative function for the first pointer
+     * when no recorded signature matches at down time. It is used only for the pointer at index 0
+     * and only while that pointer is unlatched.
      */
     fun rewrite(
         event: MotionEvent,
@@ -34,6 +51,7 @@ class InputTouchRewriter {
         onPan: (Boolean) -> Unit,
         onMultiPan: (Boolean) -> Unit,
         classifySize: Float? = null,
+        forceFirstPointerFunction: InputFunction? = null,
     ): MotionEvent? {
         if (!customization.enabled) {
             latch.clear()
@@ -48,12 +66,19 @@ class InputTouchRewriter {
             // time is classified. On POINTER_DOWN the earlier fingers are already latched (or were
             // already treated as plain fingers), so this never reclassifies a live pointer.
             val size = classifySize ?: gestureSize(event)
+            val force = forceFirstPointerFunction
             for (i in 0 until event.pointerCount) {
                 if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
                 val id = event.getPointerId(i)
                 if (latch.functionFor(id) != null) continue
-                customization.match(event.pointerCount, size)?.let { match ->
-                    latch.latch(id, match.function)
+                if (i == 0 && force != null) {
+                    // Provisional Write (or the replayed authoritative function). It overrides a
+                    // one-finger signature the settled size may now match: a gesture already
+                    // resolved to a multi-finger Pan must not have its first finger relatched as
+                    // Write, or the pan would be swallowed by the stroke it started.
+                    latch.latch(id, force)
+                } else {
+                    customization.match(event.pointerCount, size)?.let { latch.latch(id, it.function) }
                 }
             }
             val index = if (masked == MotionEvent.ACTION_DOWN) 0 else event.actionIndex
@@ -68,25 +93,17 @@ class InputTouchRewriter {
             onMultiPan(pan && event.pointerCount >= 2)
         }
 
-        // Build the replacement only if a latched finger's tool type must change.
+        // Build the replacement only if a latched finger's tool type must change. The scan itself
+        // allocates nothing, so the common Pan path (or a real stylus) pays no per-event garbage.
         var changed = false
-        val properties = Array(event.pointerCount) { MotionEvent.PointerProperties() }
-        val coords = Array(event.pointerCount) { MotionEvent.PointerCoords() }
         for (i in 0 until event.pointerCount) {
-            event.getPointerProperties(i, properties[i])
-            event.getPointerCoords(i, coords[i])
             if (event.getToolType(i) != MotionEvent.TOOL_TYPE_FINGER) continue
-            val desired = when (latch.functionFor(event.getPointerId(i))) {
-                InputFunction.WRITE, InputFunction.ALT_WRITE -> MotionEvent.TOOL_TYPE_STYLUS
-                InputFunction.ERASE -> MotionEvent.TOOL_TYPE_ERASER
-                InputFunction.PAN, null -> MotionEvent.TOOL_TYPE_FINGER
-            }
-            if (desired != properties[i].toolType) {
-                properties[i].toolType = desired
+            if (desiredToolType(latch.functionFor(event.getPointerId(i))) != event.getToolType(i)) {
                 changed = true
+                break
             }
         }
-        val out = if (changed) build(event, properties, coords) else null
+        val out = if (changed) build(event) else null
 
         when (masked) {
             MotionEvent.ACTION_POINTER_UP -> latch.release(event.getPointerId(event.actionIndex))
@@ -99,6 +116,12 @@ class InputTouchRewriter {
         return out
     }
 
+    private fun desiredToolType(function: InputFunction?): Int = when (function) {
+        InputFunction.WRITE, InputFunction.ALT_WRITE -> MotionEvent.TOOL_TYPE_STYLUS
+        InputFunction.ERASE -> MotionEvent.TOOL_TYPE_ERASER
+        InputFunction.PAN, null -> MotionEvent.TOOL_TYPE_FINGER
+    }
+
     /**
      * The contact size the recording rules use: the largest touchMinor (or touchMajor where minor
      * is absent) across the fingers in this event. The recorder built its samples the same way, so
@@ -108,6 +131,9 @@ class InputTouchRewriter {
     private fun gestureSize(event: MotionEvent): Float = contactSize(event)
 
     companion object {
+        /** Arrays are reused for anything up to this many pointers; wider events allocate. */
+        private const val MAX_POINTERS = 20
+
         /**
          * The contact size the recording rules use: the largest touchMinor (or touchMajor where
          * minor is absent) across the fingers in this event.
@@ -124,34 +150,42 @@ class InputTouchRewriter {
     }
 
     @Suppress("DEPRECATION") // the historical size/tool/axis getters have no non-deprecated twin
-    private fun build(
-        event: MotionEvent,
-        properties: Array<MotionEvent.PointerProperties>,
-        coords: Array<MotionEvent.PointerCoords>,
-    ): MotionEvent {
+    private fun build(event: MotionEvent): MotionEvent {
+        val n = event.pointerCount
+        val p = if (n <= props.size) props else Array(n) { MotionEvent.PointerProperties() }
+        val c = if (n <= coords.size) coords else Array(n) { MotionEvent.PointerCoords() }
+        for (i in 0 until n) {
+            event.getPointerProperties(i, p[i])
+            event.getPointerCoords(i, c[i])
+            if (event.getToolType(i) == MotionEvent.TOOL_TYPE_FINGER) {
+                p[i].toolType = desiredToolType(latch.functionFor(event.getPointerId(i)))
+            }
+        }
+        // obtain() copies the arrays into the event it returns, so the scratch arrays can be
+        // refilled by the next call (and the historical batch below) without touching this one.
         val out = MotionEvent.obtain(
-            event.downTime, event.eventTime, event.action, event.pointerCount,
-            properties, coords, event.metaState, event.buttonState,
+            event.downTime, event.eventTime, event.action, n,
+            p, c, event.metaState, event.buttonState,
             event.xPrecision, event.yPrecision, event.deviceId, event.edgeFlags,
             event.source, event.flags,
         )
         // MotionEvent.obtain(...) starts with no history; replay every batched sample so ink keeps
         // its full resolution instead of being resampled into chords.
+        val b = if (n <= batchCoords.size) batchCoords else Array(n) { MotionEvent.PointerCoords() }
         for (h in 0 until event.historySize) {
-            val batch = Array(event.pointerCount) { i ->
-                MotionEvent.PointerCoords().also { c ->
-                    c.x = event.getHistoricalX(i, h)
-                    c.y = event.getHistoricalY(i, h)
-                    c.pressure = event.getHistoricalPressure(i, h)
-                    c.size = event.getHistoricalSize(i, h)
-                    c.touchMajor = event.getHistoricalTouchMajor(i, h)
-                    c.touchMinor = event.getHistoricalTouchMinor(i, h)
-                    c.toolMajor = event.getHistoricalToolMajor(i, h)
-                    c.toolMinor = event.getHistoricalToolMinor(i, h)
-                    c.orientation = event.getHistoricalOrientation(i, h)
-                }
+            for (i in 0 until n) {
+                val hc = b[i]
+                hc.x = event.getHistoricalX(i, h)
+                hc.y = event.getHistoricalY(i, h)
+                hc.pressure = event.getHistoricalPressure(i, h)
+                hc.size = event.getHistoricalSize(i, h)
+                hc.touchMajor = event.getHistoricalTouchMajor(i, h)
+                hc.touchMinor = event.getHistoricalTouchMinor(i, h)
+                hc.toolMajor = event.getHistoricalToolMajor(i, h)
+                hc.toolMinor = event.getHistoricalToolMinor(i, h)
+                hc.orientation = event.getHistoricalOrientation(i, h)
             }
-            out.addBatch(event.getHistoricalEventTime(h), batch, event.metaState)
+            out.addBatch(event.getHistoricalEventTime(h), b, event.metaState)
         }
         return out
     }

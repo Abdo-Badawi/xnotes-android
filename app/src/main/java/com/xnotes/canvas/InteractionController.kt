@@ -292,6 +292,11 @@ class InteractionController(
     private var drawingPointerId = -1
     private var drawingIsStylus = false
 
+    /** A stroke started before contact-size classification settled; it can be discarded cleanly. */
+    private var provisionalStroke = false
+    /** Set by the activity just before a provisional down; consumed by [beginDraw] on that down. */
+    private var nextStrokeProvisional = false
+
     // SHAPE SNAP (hold a freehand stroke still → it becomes a real shape)
     /** Pending "pen held still" timer; non-null only while a stroke is eligible and armed. */
     private var dwellRunnable: Runnable? = null
@@ -787,6 +792,10 @@ class InteractionController(
 
     private fun handleDown(e: MotionEvent) {
         inputMultiPan = false
+        // Consumed here rather than in beginDraw, so an early branch (selection, text, ruler …)
+        // cannot leave the flag armed for a later, unrelated stroke.
+        val wantProvisional = nextStrokeProvisional
+        nextStrokeProvisional = false
         if (hoverActionTool != null) endHoverAction() // a hovering side-button gesture yields to contact
         downStoppedFling = flinging // captured before stopping: a tap that only halts a glide must not dismiss
         stopFling() // a new touch halts any in-progress glide
@@ -936,7 +945,7 @@ class InteractionController(
         }
         when {
             effectiveTool == Tool.PAN -> beginPan(vx, vy, fromPenButton = buttonHeld && penButtonTool == Tool.PAN)
-            effectiveTool.isStroke -> beginDraw(content, resolvePressure(e, 0, toolType), effectiveTool, e.eventTime, Pt(vx, vy))
+            effectiveTool.isStroke -> beginDraw(content, resolvePressure(e, 0, toolType), effectiveTool, e.eventTime, Pt(vx, vy), wantProvisional)
             effectiveTool == Tool.ERASER -> {
                 clearSelection()
                 erasingWithFinger = toolType == MotionEvent.TOOL_TYPE_FINGER
@@ -1205,6 +1214,70 @@ private fun handlePointerUp(e: MotionEvent) {
         inputPanOverride = false
     }
 
+    /**
+     * Whether a provisional (immediately rendered) stroke can safely begin. Provisional ink is only
+     * used for a plain finger draw; a press that would select, edit text, grab the ruler or start a
+     * draft must go through the exact classification path instead.
+     */
+    fun canBeginProvisionalStroke(): Boolean =
+        tool.isStroke &&
+            fingerDraws &&
+            mode == PointerMode.IDLE &&
+            !hasSelection &&
+            editingText == null &&
+            editingLabel == null &&
+            !ruler.visible &&
+            pdfText?.selection == null &&
+            polygonDraft == null &&
+            pendingShape == null &&
+            pendingTape == null &&
+            screenshotRect == null &&
+            roomButton == null
+
+    /** The next stroke begins provisionally: rendered at once, discardable until classified. */
+    fun beginProvisionalStroke() {
+        nextStrokeProvisional = true
+    }
+
+    /** Classification confirmed a write: the provisional stroke is kept as an ordinary stroke. */
+    fun confirmProvisionalStroke() {
+        nextStrokeProvisional = false
+        provisionalStroke = false
+    }
+
+    /**
+     * Drop a provisional stroke without committing anything. Its pixels are the front buffer's or
+     * the live overlay's only, never the page's: clearing [liveStroke] gives them back, no undo
+     * command was pushed, and provisional strokes never hand over onto another page.
+     */
+    fun cancelProvisionalStroke() {
+        nextStrokeProvisional = false
+        if (!provisionalStroke) return
+        cancelLongPress()
+        cancelDwell()
+        tapCandidate = false
+        dwellEligible = false
+        snappedSelectionPendingMenu = false
+        strokeDismissedSelection = false
+        crossedSegments.clear()
+        crossedPieces.clear()
+        pendingShape = null
+        shapePageIndex = null
+        liveStroke = null
+        strokePageIndex = null
+        snapEngaged = false
+        snapRunStartEdge = null
+        snapCurrentEdge = null
+        snapPenViewport = null
+        drawingPointerId = -1
+        drawingIsStylus = false
+        strokeStartTimeMs = 0L
+        steadier = null
+        provisionalStroke = false
+        mode = PointerMode.IDLE
+        requestRender()
+    }
+
     private fun handleUp(e: MotionEvent) {
         cancelLongPress()
         val idx = e.findPointerIndex(drawingPointerId).coerceAtLeast(0)
@@ -1312,8 +1385,12 @@ private fun handlePointerUp(e: MotionEvent) {
 
     // --- DRAW ---
 
-    private fun beginDraw(content: Pt, pressure: Double, drawTool: Tool, timeMs: Long, downViewport: Pt) {
+    private fun beginDraw(
+        content: Pt, pressure: Double, drawTool: Tool, timeMs: Long, downViewport: Pt,
+        provisional: Boolean = false,
+    ) {
         val pageIndex = state.pageIndexAtContent(content) ?: return
+        provisionalStroke = provisional
         // Reaching here with a live selection means the press landed off it (on it the stylus would
         // have grabbed it): dismiss it. A bare tap that only dismissed is dropped in endDraw.
         strokeDismissedSelection = hasSelection
@@ -1430,9 +1507,12 @@ private fun handlePointerUp(e: MotionEvent) {
         if (tracing && steady != null) steadyTrace.add(nib.x, nib.y, content.x, content.y)
         // The pen has walked onto another page: carry the stroke over rather than let it slide
         // under the paper. A straight line is one segment by definition and never hands over.
+        // A provisional stroke stays on the page it started on: handing over files the part behind
+        // it, which could no longer be rolled back if classification turns the gesture into a pan
+        // or an erase. Once confirmed it hands over normally.
         if (!stroke.straight) {
             val onPage = state.pageIndexAtContent(content)
-            if (onPage != null && onPage != pi) {
+            if (onPage != null && onPage != pi && !provisionalStroke) {
                 handOverStroke(stroke, pi, onPage, content, pressure, t)
                 if (steady != null && !force) showTip(nib, pressure, steady.tipTime)
                 return
@@ -1612,6 +1692,7 @@ private fun handlePointerUp(e: MotionEvent) {
         snapRunStartEdge = null
         snapCurrentEdge = null
         snapPenViewport = null
+        provisionalStroke = false
         mode = PointerMode.IDLE
         // A mid-stroke snap left a shape selected; now that the gesture is idle, surface its menu.
         if (snappedSelectionPendingMenu) {
@@ -4525,6 +4606,8 @@ private fun handlePointerUp(e: MotionEvent) {
         dismissPressAt = null
         lastPan = Pt.ZERO
         panVel = Pt.ZERO
+        provisionalStroke = false
+        nextStrokeProvisional = false
     }
 
     private fun stepOverscrollSettle(frameTimeNanos: Long) {
@@ -4685,6 +4768,8 @@ private fun handlePointerUp(e: MotionEvent) {
         bandRect = null
         lassoPoints.clear()
         textDragRect = null
+        provisionalStroke = false
+        nextStrokeProvisional = false
         // Cancel an in-progress capture drag; a frozen capture (mode IDLE) survives.
         if (mode == PointerMode.SHOT) { screenshotRect = null; onScreenshotMenu(null) }
         if (mode == PointerMode.PINCH && state.zoomingInProgress) {

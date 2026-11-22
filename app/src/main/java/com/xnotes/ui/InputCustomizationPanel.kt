@@ -262,7 +262,13 @@ class InputCustomizationState(
         onPan: (Boolean) -> Unit,
         onMultiPan: (Boolean) -> Unit,
         classifySize: Float? = null,
-    ): MotionEvent? = rewriter.rewrite(event, read(), onAltColor, onPan, onMultiPan, classifySize)
+        forceFirstPointerFunction: InputFunction? = null,
+    ): MotionEvent? = rewriter.rewrite(
+        event, read(), onAltColor, onPan, onMultiPan, classifySize, forceFirstPointerFunction,
+    )
+
+    /** Forget every pointer's latched function, for replaying a provisional gesture afresh. */
+    fun resetClassification() = rewriter.reset()
 }
 
 /** The in-window panel: a scrim over the pane, so the activity still sees every touch it records. */

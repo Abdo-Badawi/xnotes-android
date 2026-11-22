@@ -2924,6 +2924,29 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         if (canvasOpen) infinite.resetInputMultiPan() else controller.resetInputMultiPan()
     }
 
+    /**
+     * Whether this touch can be rendered provisionally, before the contact-size classification has
+     * settled. The paged editor takes this path when a finger would draw anyway; the infinite
+     * canvas keeps its own input pipeline untouched.
+     */
+    fun canBeginProvisionalInput(): Boolean =
+        !canvasOpen &&
+            tool.isStroke &&
+            controller.fingerDraws &&
+            controller.canBeginProvisionalStroke()
+
+    fun beginProvisionalInput() {
+        if (!canvasOpen) controller.beginProvisionalStroke()
+    }
+
+    fun confirmProvisionalInput() {
+        if (!canvasOpen) controller.confirmProvisionalStroke()
+    }
+
+    fun cancelProvisionalInput() {
+        if (!canvasOpen) controller.cancelProvisionalStroke()
+    }
+
     /** Apply edited preferences live and persist (used by the Preferences dialog). */
     fun applyPreferences(p: Preferences) {
         val marginChanged = p.sideMargin != settings.prefs.sideMargin
