@@ -1,16 +1,20 @@
 package com.xnotes.canvas
 
 import com.xnotes.core.FakeRasterSurface
+import com.xnotes.core.FakeRenderer
 import com.xnotes.core.FakeSurfaceFactory
 import com.xnotes.core.model.Document
 import com.xnotes.core.model.Page
+import com.xnotes.core.model.Rgba
 import com.xnotes.core.pal.RasterSurface
+import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.SurfaceFactory
 import com.xnotes.platform.CancelToken
 import com.xnotes.ui.theme.Palette
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -158,5 +162,119 @@ class SharpViewportSurfaceCleanupTest {
         assertFalse("the published base belongs to the frame", surfaces()[0].recycled)
         assertFalse("the published ink belongs to the frame", surfaces()[1].recycled)
         assertNotNull(st.sharpViewportBlit())
+    }
+
+    // --- Published-frame lifecycle -----------------------------------------
+
+    @Test
+    fun replacingANeverDrawnPublishedFrameRecyclesTheOldSurfaces() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        assertEquals(2, surfaces().size)
+
+        st.requestSharpViewport() // replaces the frame before any Canvas saw it
+        runPending()
+
+        assertEquals(4, surfaces().size)
+        assertTrue("old base recycled", surfaces()[0].recycled)
+        assertTrue("old ink recycled", surfaces()[1].recycled)
+        assertFalse("new base kept", surfaces()[2].recycled)
+        assertFalse("new ink kept", surfaces()[3].recycled)
+        assertNotNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun replacingADrawnPublishedFrameKeepsTheOldSurfacesForTheRenderer() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        val first = st.sharpViewportBlit()!! // a Canvas may still hold these bitmaps
+
+        st.requestSharpViewport()
+        runPending()
+
+        assertEquals(4, surfaces().size)
+        assertFalse("a drawn base must not be recycled", surfaces()[0].recycled)
+        assertFalse("a drawn ink must not be recycled", surfaces()[1].recycled)
+        assertFalse(surfaces()[2].recycled)
+        assertFalse(surfaces()[3].recycled)
+        assertNotNull(st.sharpViewportBlit())
+        assertNotSame(first.base, st.sharpViewportBlit()?.base)
+    }
+
+    @Test
+    fun clearingANeverDrawnPublishedFrameRecyclesIt() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        st.clearSharpViewport()
+        assertTrue(surfaces()[0].recycled)
+        assertTrue(surfaces()[1].recycled)
+        assertNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun clearingADrawnPublishedFrameLeavesItForTheRenderer() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        st.sharpViewportBlit()!! // drawn
+        st.clearSharpViewport()
+        assertFalse(surfaces()[0].recycled)
+        assertFalse(surfaces()[1].recycled)
+        assertNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun invalidatingANeverDrawnPublishedFrameRecyclesIt() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        st.invalidatePaper()
+        assertTrue(surfaces()[0].recycled)
+        assertTrue(surfaces()[1].recycled)
+        assertNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun invalidatingADrawnPublishedFrameLeavesItForTheRenderer() {
+        val st = state()
+        st.requestSharpViewport()
+        runPending()
+        st.sharpViewportBlit()!! // drawn
+        st.invalidatePaper()
+        assertFalse(surfaces()[0].recycled)
+        assertFalse(surfaces()[1].recycled)
+        assertNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun clearingTwiceRecyclesAnUnseenFrameOnlyOnce() {
+        val counting = CountingFactory()
+        val st = state(surfaceFactory = counting)
+        st.requestSharpViewport()
+        runPending()
+        st.clearSharpViewport()
+        st.clearSharpViewport()
+        assertEquals(listOf(1, 1), counting.created.map { it.recycles })
+    }
+
+    private class CountingSurface(
+        override val width: Int,
+        override val height: Int,
+        override val devicePixelRatio: Double = 1.0,
+    ) : RasterSurface {
+        val painter = FakeRenderer()
+        var recycles = 0
+        override fun fill(color: Rgba) {}
+        override fun renderer(): Renderer = painter
+        override fun recycle() { recycles++ }
+    }
+
+    private class CountingFactory : SurfaceFactory {
+        val created = mutableListOf<CountingSurface>()
+        override fun create(widthPx: Int, heightPx: Int, devicePixelRatio: Double): RasterSurface =
+            CountingSurface(widthPx, heightPx, devicePixelRatio).also { created += it }
     }
 }

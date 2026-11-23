@@ -389,6 +389,10 @@ class CanvasView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        // Release what this view owns before the workers go away: a never-drawn sharp frame is
+        // recycled now; a drawn one is only dropped for GC, since the hardware renderer may still
+        // hold its bitmaps. The in-flight sharp request is cancelled either way.
+        state?.clearSharpViewport()
         inkExecutor?.shutdown()
         backgroundExecutor?.shutdown()
         mainHandler.removeCallbacks(debugTick)

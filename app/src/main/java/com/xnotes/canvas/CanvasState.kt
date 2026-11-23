@@ -640,10 +640,41 @@ class CanvasState(
         val row: Int,
         /** The last markup edit its base layer holds, like [CacheEntry.seq]. */
         val seq: Int,
-    )
+    ) {
+        /**
+         * True once [sharpViewportBlit] has handed this frame to a Canvas. From that point a
+         * hardware-accelerated Canvas/RenderThread may still reference its bitmaps after the draw
+         * call returns, so they are left to GC instead of being recycled on replacement/clear.
+         * Main thread only.
+         */
+        var drawn = false
+
+        /** Guard against releasing the same frame twice. Main thread only. */
+        var released = false
+    }
 
     private var sharpFrame: SharpFrame? = null
     private var pendingSharp = false
+
+    /**
+     * Release a published frame's surfaces only when it is provably unseen. A frame that was never
+     * handed to a Canvas is safe to recycle synchronously; a drawn one is left to GC because
+     * CanvasView is hardware accelerated and the RenderThread may still hold its bitmaps.
+     * Main thread only.
+     */
+    private fun releaseSharpFrame(frame: SharpFrame?) {
+        if (frame == null || frame.drawn || frame.released) return
+        frame.released = true
+        frame.base.recycle()
+        frame.ink.recycle()
+    }
+
+    /** Drop the published frame, releasing it now only when it was never drawn. Main thread only. */
+    private fun dropSharpFrame() {
+        val old = sharpFrame
+        sharpFrame = null
+        releaseSharpFrame(old)
+    }
 
     /** The view an in-flight sharp render was requested for, and its request token. */
     private class SharpRequest(
@@ -721,7 +752,7 @@ class CanvasState(
     fun relayout() {
         sharpGen++ // page layout / viewport size changed: the sharp viewport must re-render
         bgGen++ // footprints/resolutions moved for every background build
-        cancelSharpRender()
+        clearSharpViewport()
         cancelBackgroundRenders()
         bandKeep = null // re-derived at the start of the next frame
         val pages = document.pages
@@ -1780,7 +1811,7 @@ class CanvasState(
         if (roomView?.page === page && roomView?.live == false) roomView = null
         // Ink-only: the PDF/template background of this and every other page is still valid, so no
         // background request is cancelled. The ink generation skips its own queued builds.
-        cancelSharpRender()
+        clearSharpViewport()
         cacheGen++
         sharpGen++
     }
@@ -1796,7 +1827,7 @@ class CanvasState(
      */
     fun invalidatePaper() {
         sharpGen++
-        cancelSharpRender()
+        clearSharpViewport()
     }
 
     fun invalidateBackground(page: Page) {
@@ -1806,7 +1837,7 @@ class CanvasState(
         pendingBg[page]?.token?.cancel()
         rebakeTokens[page]?.cancel()
         sharpGen++
-        cancelSharpRender()
+        clearSharpViewport()
     }
 
     fun invalidateAllBackgrounds() {
@@ -1814,7 +1845,7 @@ class CanvasState(
         bgGen++
         cancelBackgroundRenders()
         sharpGen++
-        cancelSharpRender()
+        clearSharpViewport()
     }
 
     /**
@@ -1829,7 +1860,7 @@ class CanvasState(
         cancelBackgroundRenders()
         cacheGen++
         sharpGen++
-        cancelSharpRender()
+        clearSharpViewport()
     }
 
     fun invalidateAllCaches() {
@@ -1842,7 +1873,7 @@ class CanvasState(
         wetInk.clear()
         bgGen++
         cancelBackgroundRenders()
-        cancelSharpRender()
+        clearSharpViewport()
         bandKeep = null
         cacheGen++
         sharpGen++
@@ -1896,7 +1927,7 @@ class CanvasState(
     fun refreshInk(pages: Collection<Page>) {
         cacheGen++
         sharpGen++
-        cancelSharpRender() // this pass cannot patch the sharp layer, and its generation just moved
+        clearSharpViewport() // this pass cannot patch the sharp layer, and its generation just moved
         for (page in pages) {
             if (page !in caches) continue
             staleInk.add(page)
@@ -1960,7 +1991,7 @@ class CanvasState(
         cacheGen++
         bgGen++
         cancelBackgroundRenders()
-        cancelSharpRender()
+        clearSharpViewport()
     }
 
     /** Cancel every queued or running background/rebake PDF request. Main thread only. */
@@ -2139,13 +2170,14 @@ class CanvasState(
         val o = origin() // live origin, incl. overscroll lift, so the sharp page rides the pull too
         val o0 = originFor(f.sx, f.sy, f.z)
         // Surface pixel p maps to screen scale*p + (o - scale*o0).
+        f.drawn = true // handed to a Canvas now; see releaseSharpFrame
         return SharpBlit(f.base, f.ink, scale, o.x - scale * o0.x, o.y - scale * o0.y)
     }
 
     /** Drop the sharp viewport surface (e.g. once the zoom falls back below the cap). */
     fun clearSharpViewport() {
         cancelSharpRender()
-        sharpFrame = null
+        dropSharpFrame()
     }
 
     /**
@@ -2227,7 +2259,9 @@ class CanvasState(
                         gen == sharpGen && row == currentRow && !pageFlipAnimating &&
                         sx == scrollX && sy == scrollY && z == zoom
                     ) {
-                        // Ownership moves to the published frame; it is not recycled here.
+                        // Retire the old frame first: a never-drawn one is recycled there, a drawn
+                        // one is only dropped for GC because the Canvas may still hold it.
+                        dropSharpFrame()
                         sharpFrame = SharpFrame(b, i, sx, sy, z, gen, row, seq)
                         published = true
                         // Replay edits committed during the build; the item snapshot predates them.
