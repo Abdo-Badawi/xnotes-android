@@ -406,14 +406,14 @@ cmd.exe /c "gradlew.bat :app:testDebugUnitTest --offline --console=plain"
 ```
 
 **PASSED.** `BUILD SUCCESSFUL`.
-Aggregated XML results: **2567 tests, 0 skipped, 0 failures, 0 errors** across 207 suites.
+Aggregated XML results: **2574 tests, 0 skipped, 0 failures, 0 errors** across 207 suites.
 
 Focused results:
 
 | Suite | Tests | Result |
 |---|---|---|
 | `PdfRenderSchedulingTest` (new) | 18 | PASSED |
-| `SharpViewportSurfaceCleanupTest` (new) | 8 | PASSED |
+| `SharpViewportSurfaceCleanupTest` (new) | 15 | PASSED |
 | `PdfiumThreadTest` | 10 | PASSED |
 | `PageTextCacheTest` | 7 | PASSED |
 | `CacheBandTest` | 5 | PASSED |
@@ -422,7 +422,7 @@ Focused results:
 | `WetInkCacheTest` | 12 | PASSED |
 
 Phase 1/2 suites (`CrossPageStrokeTest`, stroke-tessellation tests, input tests, etc.) are included
-in the 2567 passing tests.
+in the 2574 passing tests.
 
 What the new tests actually verify:
 - `PdfRenderSchedulingTest` observes the hook’s priority/token and the cache maps after manually
@@ -470,7 +470,7 @@ this repository and was not claimed as passed.
 ### Phase 1 / Phase 2 preservation
 
 - Input classification files (`InteractionController`, `InputTouchRewriter`, `FrontInk`, provisional
-  replay) were not modified. The 2567-test suite includes the Phase 1/2 tests and passes.
+  replay) were not modified. The 2574-test suite includes the Phase 1/2 tests and passes.
 - `appendToCache`, `repairRegion`, `refreshInkRegions`, `refreshAllInk`, `appendToSharpInk`,
   `repairSharpInk` and `WetInkCache` were not changed.
 - `SharpViewportEditReplayTest` still proves edits during a sharp build are replayed.
@@ -648,6 +648,92 @@ PDFium single-threading or the ink/PDF executor split changed.
 
 ---
 
+## M. Final SharpFrame ownership audit
+
+Commit `6b54d40f` (`Release never-drawn sharp frames and audit published-frame ownership`).
+
+### M.1 Ownership and drawing lifecycle
+
+| Item | Finding |
+|---|---|
+| Published owner | `sharpFrame` owns `base` and `ink` after publication. |
+| Readers | `CanvasView.onDraw` gets them through `sharpViewportBlit()` and calls `drawRaster(base)` / `drawRaster(ink)` immediately. |
+| Mutation | `appendToSharpInk` / `repairSharpInk` paint into the published ink layer on the main thread. |
+| Replacement/clear | Publication, `clearSharpViewport`, invalidations and `onDetachedFromWindow` all run on the main thread, so they cannot interleave with the Java body of `onDraw`. |
+| Renderer lifetime | `CanvasView` is hardware accelerated (`AndroidManifest.xml`). `Canvas.drawBitmap` records a display-list reference; RenderThread may still read the bitmap after `onDraw` returns. There is no public “renderer has finished this bitmap” callback/fence. |
+
+A `SharpBlit` is a borrowed pair of surfaces, not a copy. Therefore the final use of a **drawn**
+frame is not observable from `CanvasState`. Recycling it when it is replaced or cleared could pull a
+bitmap out from under RenderThread. A frame that has never been returned by `sharpViewportBlit` has
+never been handed to any Canvas, so its final use is known and it is safe to recycle.
+
+### M.2 Implemented ownership rules
+
+- `SharpFrame` records `drawn` (set once in `sharpViewportBlit`, just before the blit is returned) and
+  `released` (double-release guard).
+- `releaseSharpFrame(frame)` recycles `base`/`ink` only when `!frame.drawn && !frame.released`.
+- `dropSharpFrame()` clears the `sharpFrame` reference and releases only an undrawn frame.
+- Publication now calls `dropSharpFrame()` before installing the new frame: an undrawn old frame is
+  recycled; a drawn old frame is dropped for GC.
+- `clearSharpViewport()` calls `dropSharpFrame()`; all content/style/zoom/layout invalidations that
+  move `sharpGen` now clear the frame through it.
+- `CanvasView.onDetachedFromWindow` calls `state.clearSharpViewport()` before shutting the workers,
+  cancelling an in-flight sharp request and releasing only an unseen frame.
+- Unpublished-surface cleanup from the previous review is unchanged: cancelled/stale/partial work
+  recycles every surface it allocated; successful publication transfers ownership.
+
+**Safety rules now enforced:**
+
+1. Never recycle a surface while `renderSharpFrame` is using it.
+2. Never recycle a surface owned by a published frame that has been drawn.
+3. A drawn frame only loses its strong reference on replacement/clear/detach; GC reclaims it once
+   Canvas/RenderThread no longer holds it.
+4. An undrawn published frame is recycled exactly once on replacement/clear/detach.
+5. Identity/ownership transfer is explicit: the request owns locals, then `sharpFrame` owns them.
+
+### M.3 Accumulation finding
+
+Published frames are not leaked: after replacement/clear the strong reference is dropped. However,
+drawn frames cannot be deterministically recycled, so several quick sharp renders before GC can
+raise peak memory. This is retained as a documented limitation rather than an unsafe `recycle()`.
+No reference-counting or frame-lease architecture is introduced: the smallest safe design would be
+a CanvasView acknowledgment plus a platform render-completion fence, which is not publicly
+available/observable here.
+
+### M.4 Tests added
+
+`SharpViewportSurfaceCleanupTest` (7 new, 15 total):
+
+- `replacingANeverDrawnPublishedFrameRecyclesTheOldSurfaces`
+- `replacingADrawnPublishedFrameKeepsTheOldSurfacesForTheRenderer`
+- `clearingANeverDrawnPublishedFrameRecyclesIt`
+- `clearingADrawnPublishedFrameLeavesItForTheRenderer`
+- `invalidatingANeverDrawnPublishedFrameRecyclesIt`
+- `invalidatingADrawnPublishedFrameLeavesItForTheRenderer`
+- `clearingTwiceRecyclesAnUnseenFrameOnlyOnce`
+
+These sit alongside the existing cancellation/partial-allocation/publication tests.
+
+### M.5 Files changed
+
+| File | Change |
+|---|---|
+| `app/src/main/java/com/xnotes/canvas/CanvasState.kt` | `SharpFrame.drawn`/`released`; `releaseSharpFrame`; `dropSharpFrame`; `sharpViewportBlit` marks drawn; publication/clear/invalidations release only unseen frames |
+| `app/src/main/java/com/xnotes/canvas/CanvasView.kt` | `onDetachedFromWindow` clears the sharp frame before shutting workers |
+| `app/src/test/java/com/xnotes/canvas/SharpViewportSurfaceCleanupTest.kt` | Seven published-frame lifecycle tests |
+
+### M.6 Verification
+
+- `:app:compileDebugKotlin` — **PASSED**.
+- `:app:testDebugUnitTest` — **PASSED**: 2574 tests, 0 failures, 0 errors, 207 suites.
+- `SharpViewportSurfaceCleanupTest` — **15/15 PASSED**.
+- `:app:assembleDebug` — **PASSED**.
+
+`minSdk`, Phase 1 input behavior, Phase 2 stroke geometry, PDF resolution/quality, `renderScale`,
+`maxCachePx`, C3 priorities, C4 executors and the PDFium threading model were unchanged.
+
+---
+
 ## K. Git information
 
 | Item | Value |
@@ -655,12 +741,14 @@ PDFium single-threading or the ink/PDF executor split changed.
 | Branch | `phase-3-pdf-rendering` |
 | Implementation commit | `79238d10` — `Fix high-priority PDF rendering scheduling issues` |
 | Review-fix commit | `a4eda44c` — `Narrow PDF invalidation and recycle unpublished sharp frames` |
-| Documentation | This report, updated on the same branch after the review-fix commit |
+| SharpFrame audit commit | `6b54d40f` — `Release never-drawn sharp frames and audit published-frame ownership` |
+| Documentation | This report, updated on the same branch after the audit commit |
 | Remote | `mine` = `https://github.com/Abdo-Badawi/xnotes-android.git` |
 | Pushed branch | `mine/phase-3-pdf-rendering` (the implementation commit was verified on the remote before this report was added) |
 | Pull request | Not created (only a branch push was requested; GitHub offered the create-PR URL) |
 
 The implementation commit contains the original production changes, focused tests, adjusted
 hook-arity tests and the Phase 3 audit report. The review-fix commit adds the generation-scope and
-sharp-ownership fixes with their tests. This report is updated in a follow-up documentation commit.
+unpublished-surface fixes. The SharpFrame audit commit adds the published-frame ownership policy and
+its tests. This report is updated in a follow-up documentation commit.
 `writing&performance_edits.txt` (untracked phase plan) was not staged or committed.
