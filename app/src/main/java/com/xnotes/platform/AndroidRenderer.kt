@@ -43,6 +43,12 @@ class AndroidRenderer(private val canvas: Canvas) : Renderer {
     }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
     private val rasterBlendPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isDither = true }
+    /** Exact 1:1 copy, for live surfaces already on the destination's pixel grid. */
+    private val exactBitmapPaint = Paint().apply {
+        isAntiAlias = false
+        isFilterBitmap = false
+        isDither = false
+    }
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val layerPaint = Paint()
     private val mathInk by lazy { MathRendering.Ink() }
@@ -307,6 +313,16 @@ class AndroidRenderer(private val canvas: Canvas) : Renderer {
         }
         val destRect = RectF(dest.left.toFloat(), dest.top.toFloat(), dest.right.toFloat(), dest.bottom.toFloat())
         canvas.drawBitmap(bmp, srcRect, destRect, bitmapPaint)
+    }
+
+    override fun drawRasterExact(raster: RasterSurface, dest: Rect, src: Rect?) {
+        val bmp = (raster as? AndroidRasterSurface)?.bitmap ?: return
+        if (bmp.isRecycled) return
+        val srcRect = src?.let {
+            android.graphics.Rect(it.left.toInt(), it.top.toInt(), it.right.toInt(), it.bottom.toInt())
+        }
+        val destRect = RectF(dest.left.toFloat(), dest.top.toFloat(), dest.right.toFloat(), dest.bottom.toFloat())
+        canvas.drawBitmap(bmp, srcRect, destRect, exactBitmapPaint)
     }
 
     // MULTIPLY uses the W3C separable blend (API 29+); below that (and for SRC_OVER) it falls back

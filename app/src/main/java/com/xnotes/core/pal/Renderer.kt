@@ -225,6 +225,18 @@ interface Renderer {
     fun drawRaster(raster: RasterSurface, dest: Rect, src: Rect? = null)
 
     /**
+     * Draw [raster] into [dest] as an exact one-to-one copy: no filtering and no resampling.
+     *
+     * Only for surfaces already rasterized at the destination's pixel scale and placed on its
+     * pixel grid — the live wet-ink layer while the canvas paints screen-space sharp ink. A
+     * filtered blit of such a surface softens every antialiased edge by up to a pixel even though
+     * the resolutions match. Defaults to [drawRaster] for backends that cannot make the
+     * distinction (export, tests); the screen backend overrides it.
+     */
+    fun drawRasterExact(raster: RasterSurface, dest: Rect, src: Rect? = null) =
+        drawRaster(raster, dest, src)
+
+    /**
      * Like [drawRaster] but composites the bitmap at [alpha] with [blend]. Lets a pre-rendered
      * (opaque) highlighter ribbon be blitted so it MULTIPLY-darkens against the live page each
      * frame without re-tessellating the stroke. Default ignores [alpha]/[blend] and draws opaque,

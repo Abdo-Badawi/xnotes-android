@@ -39,6 +39,15 @@ class FakeRenderer : Renderer {
     /** Page-space rects a raster was blitted into. */
     val rasterDests = mutableListOf<Rect>()
 
+    /** Rects blitted through the exact (unfiltered) live-ink path. */
+    val exactRasterDests = mutableListOf<Rect>()
+
+    /** How many ribbon pieces were emitted as polygons/circles, so smoothing can be counted. */
+    var polygonFills = 0
+        private set
+    var circleFills = 0
+        private set
+
     /** Stroked polyline segments, as start/end pairs (the page ruling draws through these). */
     val segments = mutableListOf<Pair<Pt, Pt>>()
 
@@ -68,10 +77,14 @@ class FakeRenderer : Renderer {
     override fun clear() { ops += "clear" }
     override fun fillBackground(rect: Rect, color: Rgba) { ops += "fillBackground" }
     override fun fillRect(rect: Rect, color: Rgba) { ops += "fillRect" }
-    override fun fillPolygon(points: List<Pt>, color: Rgba, rule: FillRule) { ops += "fillPolygon" }
+    override fun fillPolygon(points: List<Pt>, color: Rgba, rule: FillRule) {
+        ops += "fillPolygon"
+        polygonFills++
+    }
     override fun fillCircle(center: Pt, radius: Double, color: Rgba) {
         ops += "fillCircle"
         circles += center
+        circleFills++
     }
     override fun fillEllipse(center: Pt, rx: Double, ry: Double, color: Rgba) { ops += "fillEllipse" }
     override fun strokeRect(rect: Rect, pen: Pen) { ops += "strokeRect" }
@@ -92,6 +105,10 @@ class FakeRenderer : Renderer {
     override fun drawRaster(raster: RasterSurface, dest: Rect, src: Rect?) {
         ops += "drawRaster"
         rasterDests += dest
+    }
+    override fun drawRasterExact(raster: RasterSurface, dest: Rect, src: Rect?) {
+        ops += "drawRasterExact"
+        exactRasterDests += dest
     }
     override fun drawImage(image: ImageData, dest: Rect, orientation: Int, angle: Double, flip: Flip, part: Rect?) { ops += "drawImage"; images += dest; parts += part }
 

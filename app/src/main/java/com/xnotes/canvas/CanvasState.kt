@@ -1966,11 +1966,36 @@ class CanvasState(
      * The surface is capped at twice the viewport's pixels: a stroke sweeping a deeply zoomed page
      * could ask for a buffer many times the screen it is drawn on, and past that cap redrawing the
      * ribbon is the cheaper of the two.
+     *
+     * [pageIndex] is the page the stroke lives on, so an upright view can anchor the wet surface to
+     * the same device pixel grid as the sharp viewport. A filtered blit of a page-space surface is
+     * soft even at 1:1; on the grid it is an exact copy, so deep zoom and the pen-up handover show
+     * the same edge. Rotated views keep the old path: their page axes are not the device axes.
      */
-    fun paintLiveStroke(r: Renderer, stroke: Stroke) {
+    fun paintLiveStroke(r: Renderer, stroke: Stroke, pageIndex: Int = -1) {
         val res = (zoom * renderScale).coerceAtLeast(0.01)
         val cap = 2L * max(viewportW, 1) * max(viewportH, 1)
-        if (!wetInk.paint(r, stroke, res, cap)) stroke.paint(r)
+        val grid = if (rotationDeg == 0 && abs(res - zoom) < 1e-9) liveInkGrid(pageIndex) else null
+        if (!wetInk.paint(r, stroke, res, cap, grid?.x ?: Double.NaN, grid?.y ?: Double.NaN)) {
+            stroke.paint(r)
+        }
+    }
+
+    /**
+     * The page-space point that lands on device (0,0) for [pageIndex], or null when the index or
+     * the view cannot provide one. A wet surface anchored to this point has real device pixels, so
+     * its blit is a straight copy rather than a resample. Upright views only.
+     */
+    internal fun liveInkGrid(pageIndex: Int): Pt? {
+        if (rotationDeg != 0 || zoom <= 0.0 || !zoom.isFinite()) return null
+        val page = document.pages.getOrNull(pageIndex) ?: return null
+        val rect = pageRects.getOrNull(pageIndex) ?: return null
+        val insets = insets(page)
+        val origin = origin()
+        return Pt(
+            -(origin.x / zoom + rect.left + insets.left),
+            -(origin.y / zoom + rect.top + insets.top),
+        )
     }
 
     /**

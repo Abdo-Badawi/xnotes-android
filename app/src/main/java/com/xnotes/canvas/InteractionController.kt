@@ -4883,7 +4883,11 @@ private fun handlePointerUp(e: MotionEvent) {
             // Live in-progress stroke / shape preview, clipped to its page. The stroke goes through
             // the wet cache, which blits whatever has stopped moving instead of refilling it.
             if (frontInk?.live != true) {
-                liveStroke?.let { stroke -> paintClippedToPage(r, strokePageIndex) { state.paintLiveStroke(r, stroke) } }
+                liveStroke?.let { stroke ->
+                    paintClippedToPage(r, strokePageIndex) {
+                        state.paintLiveStroke(r, stroke, strokePageIndex ?: -1)
+                    }
+                }
             }
             pendingShape?.let { shape -> paintClippedToPage(r, shapePageIndex) { shape.paint(r) } }
             pendingTape?.let { tape -> paintClippedToPage(r, tapePageIndex) { tape.paint(r) } }

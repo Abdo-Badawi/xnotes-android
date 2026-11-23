@@ -11,6 +11,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.round
 
 /**
  * The raster half of the wet cache: the part of the stroke under the pen that has stopped moving,
@@ -61,8 +62,20 @@ class WetInkCache(private val surfaceFactory: SurfaceFactory) {
      *
      * [res] is device px per page px and [maxPixels] caps the surface, since a stroke sweeping a
      * zoomed-in page could otherwise ask for a buffer far larger than the screen showing it.
+     *
+     * [gridX]/[gridY] are page-space coordinates that land on a whole device pixel (the page's
+     * point at the view's origin). When they are finite the surface is anchored to that device
+     * pixel grid and blitted as an exact 1:1 copy, so the live raster is the same raster the
+     * canvas would produce directly at [res]. Without them the old filtered blit is kept.
      */
-    fun paint(r: Renderer, stroke: Stroke, res: Double, maxPixels: Long): Boolean {
+    fun paint(
+        r: Renderer,
+        stroke: Stroke,
+        res: Double,
+        maxPixels: Long,
+        gridX: Double = Double.NaN,
+        gridY: Double = Double.NaN,
+    ): Boolean {
         val ribbon = stroke.wetRibbon ?: return false
         if (!stroke.wetCacheable) return false
         if (owner !== stroke || abs(this.res - res) > 1e-9) {
@@ -71,12 +84,13 @@ class WetInkCache(private val surfaceFactory: SurfaceFactory) {
             baked = 0
             bakedArc = 0.0
         }
+        val aligned = gridX.isFinite() && gridY.isFinite() && res > 0.0
         val settled = ribbon.settledCount
         if (settled < MIN_BAKE_POINTS) return false
-        if (!ensureRoom(ribbon.bounds(), maxPixels)) return false
+        if (!ensureRoom(ribbon.bounds(), maxPixels, gridX, gridY)) return false
         bake(stroke, ribbon, settled)
         val s = surface ?: return false
-        r.drawRaster(s, cover)
+        if (aligned) r.drawRasterExact(s, cover) else r.drawRaster(s, cover)
         // One point back, so the live run and the baked one share a disc and cannot leave a gap,
         // and it starts exactly where the baked run's dash pattern got to.
         val from = max(baked - 1, 0)
@@ -102,7 +116,7 @@ class WetInkCache(private val surfaceFactory: SurfaceFactory) {
      * while redrawing would cost every point the stroke has laid down, which is the thing this
      * whole cache exists to stop paying.
      */
-    private fun ensureRoom(needed: Rect, maxPixels: Long): Boolean {
+    private fun ensureRoom(needed: Rect, maxPixels: Long, gridX: Double, gridY: Double): Boolean {
         val old = surface
         val carry = old != null && baked > 0
         if (carry && contains(cover, needed)) return true
@@ -113,8 +127,13 @@ class WetInkCache(private val surfaceFactory: SurfaceFactory) {
         // Anchored a whole number of surface pixels out from the old anchor, so carrying the
         // pixels over is a straight copy. Off the grid every growth would resample the ink, and a
         // long stroke would go visibly soft where the short ones behind it stayed crisp.
-        val originX = if (carry) cover.left - ceil((cover.left - want.x) * res) / res else want.x
-        val originY = if (carry) cover.top - ceil((cover.top - want.y) * res) / res else want.y
+        //
+        // A new surface is also anchored to the view's device pixel grid when the caller supplies
+        // one. Then a surface pixel is a device pixel, exactly as the sharp viewport rasterizes
+        // committed ink, and the blit needs no resampling. Growth keeps the old grid, which is on
+        // the same lattice because it started there.
+        val originX = if (carry) cover.left - ceil((cover.left - want.x) * res) / res else snap(want.x, gridX)
+        val originY = if (carry) cover.top - ceil((cover.top - want.y) * res) / res else snap(want.y, gridY)
         val w = ceil((want.right - originX) * res).toInt().coerceAtLeast(1)
         val h = ceil((want.bottom - originY) * res).toInt().coerceAtLeast(1)
         if (w.toLong() * h.toLong() > maxPixels) return false
@@ -168,6 +187,13 @@ class WetInkCache(private val surfaceFactory: SurfaceFactory) {
         }
         baked = settled
     }
+
+    /**
+     * [v] moved to the nearest point on [grid]'s [res]-spaced pixel lattice. A non-finite grid
+     * leaves [v] where it was, so callers with no device transform keep the old placement.
+     */
+    private fun snap(v: Double, grid: Double): Double =
+        if (grid.isFinite() && res > 0.0) grid + round((v - grid) * res) / res else v
 
     private fun contains(outer: Rect, inner: Rect): Boolean =
         inner.left >= outer.left && inner.top >= outer.top &&
