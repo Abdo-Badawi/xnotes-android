@@ -176,6 +176,12 @@ class CanvasView @JvmOverloads constructor(
 
     @Suppress("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // An explicit interaction signal for scheduling: while any pointer is down, speculative PDF
+        // prefetch is suspended and in-flight WARM work is cancelled. No timers or heuristics.
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> state?.beginInput()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> state?.endInput()
+        }
         if (trackScrollbar(event)) return true
         if (trackFourFingerTap(event)) return true
         if (trackMultiFingerTap(event)) return true
@@ -393,6 +399,7 @@ class CanvasView @JvmOverloads constructor(
         // recycled now; a drawn one is only dropped for GC, since the hardware renderer may still
         // hold its bitmaps. The in-flight sharp request is cancelled either way.
         state?.clearSharpViewport()
+        state?.endInput() // a detach mid-gesture must not leave speculative work suspended forever
         inkExecutor?.shutdown()
         backgroundExecutor?.shutdown()
         mainHandler.removeCallbacks(debugTick)
@@ -458,7 +465,7 @@ class CanvasView @JvmOverloads constructor(
                 r.translate(pr.left, pr.top)
                 paintUnderInk(r, st, page, st.displayRectToPage(page, visible.translate(-pr.left, -pr.top)))
             }
-            st.cacheForOrSchedule(page)?.let { blitPageSurface(r, st, page, pr, it.surface) }
+            st.cacheForOrSchedule(page)?.takeIf { !it.empty }?.let { blitPageSurface(r, st, page, pr, it.surface) }
         }
         r.restore()
 
@@ -490,7 +497,7 @@ class CanvasView @JvmOverloads constructor(
                         r.translate(pr.left, pr.top)
                         paintUnderInk(r, st, page, st.displayRectToPage(page, neighbourVisible.translate(-pr.left, -pr.top)))
                     }
-                    st.cacheForOrSchedule(page)?.let { blitPageSurface(r, st, page, pr, it.surface) }
+                    st.cacheForOrSchedule(page)?.takeIf { !it.empty }?.let { blitPageSurface(r, st, page, pr, it.surface) }
                 }
                 r.restore()
                 canvas.restore()
@@ -632,7 +639,7 @@ class CanvasView @JvmOverloads constructor(
         st.backgroundForOrSchedule(page)
         st.cacheForOrSchedule(page)
         val bg = st.rawBackgroundCache(page)
-        val ink = st.rawInkCache(page)
+        val ink = st.rawInkCache(page)?.takeIf { !it.empty }
         r.withSave {
             r.clipRect(pr)
             r.translate(pr.left, pr.top)

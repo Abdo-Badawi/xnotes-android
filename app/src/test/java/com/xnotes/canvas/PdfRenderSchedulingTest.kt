@@ -190,6 +190,74 @@ class PdfRenderSchedulingTest {
         assertTrue(paints.isEmpty())
     }
 
+    // --- M2: input-aware deferral -----------------------------------------
+
+    @Test
+    fun inputStartCancelsSpeculativePrefetchButLeavesVisibleWorkAlone() {
+        val st = state(pageCount = 6)
+        val visible = st.document.pages[0]
+        val prefetched = st.document.pages[1]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(visible) // the draw loop's visible build
+        st.backgroundForOrSchedule(prefetched, PdfPriority.WARM) // speculative
+        assertEquals(2, bgQueue.size)
+
+        st.beginInput()
+        runBackground()
+
+        assertEquals("only the page on screen may paint", listOf(visible), paints.map { it.page })
+        assertEquals(1, st.cacheSnapshot().bgPages)
+        // The cancelled prefetch's pending mark was cleaned, so it can be queued again later.
+        assertNull(st.backgroundForOrSchedule(prefetched, PdfPriority.WARM))
+        assertEquals(1, bgQueue.size)
+    }
+
+    @Test
+    fun prefetchIsSuspendedWhileAPointerIsDownAndResumesAfterItLifts() {
+        val st = state(pageCount = 6)
+        st.beginInput()
+        st.prefetchAndPrune()
+        assertTrue("no speculative PDF work while touching", bgQueue.isEmpty())
+        assertTrue("no speculative ink work while touching", inkQueue.isEmpty())
+        assertTrue(paints.isEmpty())
+
+        st.endInput()
+        st.prefetchAndPrune()
+        assertTrue("prefetch resumes on the next frame after release", bgQueue.isNotEmpty())
+    }
+
+    @Test
+    fun aPageThatBecomesVisiblePromotesItsPendingWarmBuild() {
+        val st = state(pageCount = 6)
+        val page = st.document.pages[0]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(page, PdfPriority.WARM) // speculative first
+        assertEquals(1, bgQueue.size)
+
+        // The draw loop now needs the same page. It must not wait for the WARM task.
+        st.backgroundForOrSchedule(page, PdfPriority.VISIBLE_RENDER)
+        assertEquals(2, bgQueue.size)
+        runBackground()
+
+        assertEquals(listOf(page), paints.map { it.page })
+        assertEquals(PdfPriority.VISIBLE_RENDER, paints.single().priority)
+        assertEquals(1, st.cacheSnapshot().bgPages)
+    }
+
+    @Test
+    fun inputDoesNotCancelAMarkupRepair() {
+        val st = state(pageCount = 1)
+        val page = st.document.pages[0]
+        st.backgroundFor(page) // synchronous first layer
+        paints.clear()
+        val m = markup()
+        page.markups = listOf(m)
+        st.rebakeBackground(page, listOf(m))
+        st.beginInput()
+        runBackground()
+        assertEquals("background repair is not speculative prefetch", listOf(page), paints.map { it.page })
+    }
+
     // --- C3: priorities ---------------------------------------------------
 
     @Test

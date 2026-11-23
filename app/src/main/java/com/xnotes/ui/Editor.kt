@@ -2246,6 +2246,15 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             val idx = pf?.indexOf?.get(page)
             if (pf != null && idx != null) FlowPainter.paintPage(renderer, pf.frame, idx, region, math = false, chrome = true)
         }
+        // Let an ink-free page keep a 1x1 sentinel instead of a full-size transparent ink surface.
+        // Reads only the immutable published frame, like the painters above.
+        state.hasFlowContent = { page ->
+            val pf = publishedFlow
+            val idx = pf?.indexOf?.get(page)
+            val slice = if (pf != null && idx != null) pf.frame.pages.getOrNull(idx) else null
+            slice != null && (slice.lines.isNotEmpty() || slice.tables.isNotEmpty() ||
+                slice.breaks.isNotEmpty() || slice.callouts.isNotEmpty())
+        }
         state.paintMath = { page, renderer, region ->
             val pf = publishedFlow
             val idx = pf?.indexOf?.get(page)
@@ -3105,6 +3114,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     fun retire() {
         secondary?.retire()
         RetiredEditors.inProcess.add(background)
+    }
+
+    /** Android memory pressure: drop off-screen rendered page caches in this pane and the other one. */
+    fun trimMemoryCaches() {
+        state.trimMemoryCaches()
+        secondary?.state?.trimMemoryCaches()
     }
 
     /** Persist the open canvas, or clear the stored one when a canvas is not what is open. */

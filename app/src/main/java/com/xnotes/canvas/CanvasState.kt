@@ -43,7 +43,17 @@ internal fun CanvasItem.isHighlighterInk(): Boolean = this is Stroke && this.too
  * mismatch — and blitted stretched into the new one meanwhile, like a stale-resolution entry is
  * during a pinch.
  */
-class CacheEntry(val surface: RasterSurface, val res: Double, val cover: Rect = Rect(0.0, 0.0, 0.0, 0.0)) {
+class CacheEntry(
+    val surface: RasterSurface,
+    val res: Double,
+    val cover: Rect = Rect(0.0, 0.0, 0.0, 0.0),
+    /**
+     * True for the shared 1x1 sentinel an ink-free page holds instead of a full-size transparent
+     * surface. Nothing is ever drawn into it: [CanvasState.appendToCache]/[CanvasState.repairRegion]
+     * rebuild such a page before they would paint, and the draw loop skips blitting it.
+     */
+    val empty: Boolean = false,
+) {
     /** A background layer's last markup edit held (see [CanvasState.rebakeBackground]). Main thread only. */
     var seq: Int = 0
 }
@@ -503,6 +513,14 @@ class CanvasState(
     var paintFlow: ((page: Page, renderer: Renderer, region: Rect) -> Unit)? = null
 
     /**
+     * Whether the published flow actually paints anything on [page]. Lets an ink cache skip its
+     * full-size surface for a page with no items and no flow text. Main-thread install; the callback
+     * must read only the immutable published layout (it runs on cache threads). Null falls back to
+     * assuming any installed [paintFlow] may paint, so an older host keeps building full surfaces.
+     */
+    var hasFlowContent: ((page: Page) -> Boolean)? = null
+
+    /**
      * Optional painter for the flow's formulas, which [paintFlow] leaves out of every cache:
      * [CanvasView] paints them over the background each frame, so one that finishes setting
      * appears without its page being rebuilt. Like [paintFlow] it reads only the published layout.
@@ -531,6 +549,12 @@ class CanvasState(
      */
     private val caches = HashMap<Page, CacheEntry>()
     private val bgCaches = HashMap<Page, CacheEntry>()
+
+    /**
+     * The shared 1x1 transparent surface an ink-free page's cache holds. Allocating it costs one
+     * pixel, never a page-sized bitmap; it is never drawn into or recycled (see [CacheEntry.empty]).
+     */
+    private val emptyInkSurface: RasterSurface by lazy { surfaceFactory.create(1, 1, 1.0) }
 
     /**
      * Per-highlighter opaque-ribbon bitmaps. Highlighters can't be baked into [caches] (they
@@ -585,7 +609,7 @@ class CanvasState(
     private fun runBackground(work: () -> Unit) = (runAsyncBackground ?: runAsync)(work)
 
     /** A scheduled background build: its cancellation token and the page whose cache it fills. */
-    private class BackgroundRequest(val token: CancelToken)
+    private class BackgroundRequest(val token: CancelToken, val priority: PdfPriority)
 
     /** Pages with a build in flight, so we never queue the same page twice. */
     private val pendingInk = HashMap<Page, Any>()
@@ -600,6 +624,16 @@ class CanvasState(
      * so a build scheduled before any draw is never skipped.
      */
     @Volatile private var bandKeep: Set<Page>? = null
+
+    /**
+     * True while a pointer is down on the canvas (handwriting, pan, pinch or any other gesture).
+     * Speculative PDF prefetch is suspended while it is set, and an in-flight [PdfPriority.WARM]
+     * background request is cancelled, so it cannot occupy the single PDFium thread ahead of the
+     * page being drawn or the ink being written. Set by [CanvasView] from the touch stream; the
+     * next frame after release resumes normal prefetch (no timer).
+     */
+    @Volatile var inputActive: Boolean = false
+        private set
 
     /** Where [repairRegion] repainted a page while its build was in flight, to paint again on what the build brings. */
     private val repairedMeanwhile = HashMap<Page, Rect>()
@@ -1332,9 +1366,11 @@ class CanvasState(
     }
 
     /** Whether this entry still matches [page]'s footprint and the [target] resolution, and holds
-     *  the page's current content ([staleInk]). */
+     *  the page's current content ([staleInk]). An empty entry has no pixels at any resolution, so
+     *  a zoom change does not make it obsolete. */
     private fun CacheEntry.usableFor(page: Page, target: Double): Boolean =
-        page !in staleInk && cover == footprint(page) && (zoomingInProgress || abs(res - target) < 1e-6)
+        page !in staleInk && cover == footprint(page) &&
+            (empty || zoomingInProgress || abs(res - target) < 1e-6)
 
     /**
      * Like [cacheFor] but never rasterizes on the calling (UI) thread: returns the ready
@@ -1452,6 +1488,13 @@ class CanvasState(
 
     private fun renderInk(page: Page, res: Double, items: InkItems, includeFlow: Boolean): CacheEntry {
         val cover = footprint(page)
+        // Nothing to bake: no strokes/shapes, no flow text (and, with no predicate installed, assume
+        // any flow painter may draw). Keep a 1x1 sentinel instead of a full page of transparent ARGB;
+        // an unannotated imported PDF otherwise carries one such surface per cached page.
+        val drawsFlow = includeFlow && (hasFlowContent?.invoke(page) ?: (paintFlow != null))
+        if (items.under.isEmpty() && items.over.isEmpty() && !drawsFlow) {
+            return CacheEntry(emptyInkSurface, res, cover, empty = true)
+        }
         val w = ceil(cover.w * res).toInt().coerceAtLeast(1)
         val h = ceil(cover.h * res).toInt().coerceAtLeast(1)
         val surface = surfaceFactory.create(w, h, 1.0)
@@ -1572,8 +1615,15 @@ class CanvasState(
     }
 
     private fun scheduleBg(page: Page, res: Double, priority: PdfPriority, prefetch: Boolean) {
-        if (pendingBg.containsKey(page)) return
-        val request = BackgroundRequest(CancelToken())
+        val pending = pendingBg[page]
+        if (pending != null) {
+            // A page that was merely prefetched and is now on screen supersedes its WARM request:
+            // cancel it and queue the visible build so the PDFium thread does not finish speculative
+            // work first. Anything else stays de-duplicated as before.
+            if (pending.priority != PdfPriority.WARM || priority == PdfPriority.WARM) return
+            pending.token.cancel()
+        }
+        val request = BackgroundRequest(CancelToken(), priority)
         pendingBg[page] = request
         val gen = bgGen
         val seq = markupSeq // the build reads the markups after this, so it holds every edit up to here
@@ -1726,7 +1776,7 @@ class CanvasState(
         if (pendingSharp) pendingSharpEdits.add(page to item.paintBounds().outset(SHARP_EDIT_PAD))
         val res = clampedRes(page)
         val existing = caches[page]
-        if (existing == null || !existing.usableFor(page, res)) {
+        if (existing == null || existing.empty || !existing.usableFor(page, res)) {
             invalidatePage(page)
             return
         }
@@ -1751,6 +1801,7 @@ class CanvasState(
         repairSharpInk(page, dirtyRect) // erase from the sharp ink layer in place, no re-render
         if (pendingSharp) pendingSharpEdits.add(page to dirtyRect)
         val entry = caches[page] ?: return false
+        if (entry.empty) return false // the sentinel owns no pixels; a rebuild is the correct repair
         repaintCached(entry, page, dirtyRect)
         if (page in pendingInk) repairedMeanwhile[page] = repairedMeanwhile[page]?.union(dirtyRect) ?: dirtyRect
         return true
@@ -2041,6 +2092,46 @@ class CanvasState(
         releaseGeometryExcept(visible)
     }
 
+    /**
+     * A pointer has landed on the canvas. Speculative PDF work must yield: an in-flight
+     * [PdfPriority.WARM] request is cancelled (queued work leaves the queue; a running native render
+     * stops at PDFium's next pause check), and [prefetchAndPrune] stops adding new speculative work.
+     * Visible-page, sharp and interactive requests are untouched. Idempotent; main thread only.
+     */
+    fun beginInput() {
+        if (inputActive) return
+        inputActive = true
+        for (request in pendingBg.values) if (request.priority == PdfPriority.WARM) request.token.cancel()
+    }
+
+    /** The last pointer has lifted (or the gesture was cancelled); the next frame resumes prefetch. */
+    fun endInput() {
+        inputActive = false
+    }
+
+    /**
+     * Release memory held by rendered page caches under Android memory pressure, keeping only the
+     * pages actually on screen. Off-screen PDF/ink layers, highlighter ribbons, ribbon geometry and
+     * the sharp viewport are dropped for GC (never recycled: a hardware Canvas may still reference a
+     * drawn frame). Their pending requests are cancelled and the band shrinks to the visible pages so
+     * a result that lands after this cannot repopulate the dropped caches. The next frame after
+     * pressure passes rebuilds normally; the visible page is never evicted. Main thread only.
+     */
+    fun trimMemoryCaches() {
+        val keep = visiblePageRange()?.let { range ->
+            val pages = document.pages
+            HashSet<Page>(range.last - range.first + 1).apply {
+                for (i in range) pages.getOrNull(i)?.let { add(it) }
+            }
+        } ?: emptySet()
+        applyBandKeep(keep)
+        dropCachesExcept(keep)
+        for ((page, request) in pendingBg) if (page !in keep) request.token.cancel()
+        for ((page, token) in rebakeTokens) if (page !in keep) token.cancel()
+        // A sharp frame is a second full-res viewport; drop it and any request for it.
+        clearSharpViewport()
+    }
+
     /** Pages to build ahead of the viewport ([prefetch], nearest first) and pages whose caches survive the frame ([keep]). */
     class CacheBand(val prefetch: List<Page>, val keep: Set<Page>)
 
@@ -2093,12 +2184,14 @@ class CanvasState(
      * Runs after the visible pages are scheduled, so they build first; a pinch moving the zoom
      * keeps the band but prefetches nothing. Speculative work is queued at [PdfPriority.WARM] and
      * is not started once the executors already have a screenful or so backed up, so a fast fling
-     * cannot pile up an unbounded amount of prefetch behind the page the user is looking at.
+     * cannot pile up an unbounded amount of prefetch behind the page the user is looking at. It is
+     * also suspended entirely while a pointer is down (see [beginInput]), so handwriting and
+     * pan/pinch never compete with speculative rendering.
      */
     fun prefetchAndPrune() {
         val band = cacheBand()
         applyBandKeep(band.keep)
-        if (!zoomingInProgress) {
+        if (!zoomingInProgress && !inputActive) {
             val canPrefetchBackground = backgroundQueueDepth() < PREFETCH_BG_QUEUE_LIMIT
             val canPrefetchInk = inkQueueDepth() < PREFETCH_INK_QUEUE_LIMIT
             for (page in band.prefetch) {
@@ -2398,7 +2491,7 @@ class CanvasState(
 
     fun cacheSnapshot(): CacheSnapshot {
         var bytes = 0L
-        for (e in caches.values) bytes += e.surface.width.toLong() * e.surface.height * 4L
+        for (e in caches.values) if (!e.empty) bytes += e.surface.width.toLong() * e.surface.height * 4L
         for (e in bgCaches.values) bytes += e.surface.width.toLong() * e.surface.height * 4L
         for (e in hlCaches.values) bytes += e.surface.width.toLong() * e.surface.height * 4L
         val visible = visiblePageRange()?.let { it.last - it.first + 1 } ?: 0
