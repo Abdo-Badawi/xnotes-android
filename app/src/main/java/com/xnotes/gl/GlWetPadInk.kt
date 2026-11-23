@@ -273,11 +273,8 @@ class GlWetPadInk {
         peakH = max(peakH, bucket(dh))
         if (!ensureScratch(max(peakW, floorW), max(peakH, floorH), samples)) return false
 
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, scratchFbo)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glClearColor(0f, 0f, 0f, 0f)
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        GLES30.glViewport(0, 0, dw, dh)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthMask(false)
         GLES30.glEnable(GLES30.GL_BLEND)
@@ -292,34 +289,44 @@ class GlWetPadInk {
 
         val camChunkX = floor(s.scrollX / GeometryStore.CHUNK_SIZE)
         val camChunkY = floor(s.scrollY / GeometryStore.CHUNK_SIZE)
-        program.begin(
-            camChunkX, camChunkY,
-            s.scrollX - camChunkX * GeometryStore.CHUNK_SIZE,
-            s.scrollY - camChunkY * GeometryStore.CHUNK_SIZE,
-            s.zoom, dw.toDouble(), dh.toDouble(),
-            damage.left.toDouble(), damage.top.toDouble(),
-        )
-        drawBuffer(program, runs, runPieces)
-        drawBuffer(program, tail, tailPieces)
-        program.disableAttributes()
+        // The damage can be wider than the bounded scratch buffer, so work through it in
+        // non-overlapping regions that each fit. Every region is cleared, rebuilt from the same
+        // geometry and blitted at its own origin, so nothing is scaled, cropped or carried over.
+        ScratchTiles.forEach(damage, scratchW, scratchH) { tile ->
+            val tw = tile.width
+            val th = tile.height
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, scratchFbo)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            GLES30.glViewport(0, 0, tw, th)
+            program.begin(
+                camChunkX, camChunkY,
+                s.scrollX - camChunkX * GeometryStore.CHUNK_SIZE,
+                s.scrollY - camChunkY * GeometryStore.CHUNK_SIZE,
+                s.zoom, tw.toDouble(), th.toDouble(),
+                tile.left.toDouble(), tile.top.toDouble(),
+            )
+            drawBuffer(program, runs, runPieces, tile)
+            drawBuffer(program, tail, tailPieces, tile)
+            program.disableAttributes()
 
-        // Out of a multisampled read GLES3 allows one shape of blit: identical rectangles. So the
-        // resolve lands at the twin's origin, and the twin, which carries no such rule, goes to
-        // wherever on the surface the damage is.
-        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, scratchFbo)
-        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, resolveFbo)
-        GLES30.glBlitFramebuffer(0, 0, dw, dh, 0, 0, dw, dh, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST)
-        GLES30.glInvalidateFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 1, INVALIDATE_COLOR, 0)
+            // Out of a multisampled read GLES3 allows one shape of blit: identical rectangles. So
+            // the resolve lands at the twin's origin, and the twin, which carries no such rule,
+            // goes to wherever on the surface the region is.
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, scratchFbo)
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, resolveFbo)
+            GLES30.glBlitFramebuffer(0, 0, tw, th, 0, 0, tw, th, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST)
+            GLES30.glInvalidateFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 1, INVALIDATE_COLOR, 0)
 
-        // The surface counts up from the bottom and the damage counts down from the top.
-        val bottom = surfaceH - damage.bottom
-        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, resolveFbo)
-        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0)
-        GLES30.glBlitFramebuffer(
-            0, 0, dw, dh,
-            damage.left, bottom, damage.left + dw, bottom + dh,
-            GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST,
-        )
+            // The surface counts up from the bottom and the damage counts down from the top.
+            val bottom = surfaceH - tile.bottom
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, resolveFbo)
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0)
+            GLES30.glBlitFramebuffer(
+                0, 0, tw, th,
+                tile.left, bottom, tile.left + tw, bottom + th,
+                GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_NEAREST,
+            )
+        }
         lastDamage = "${dw}x$dh"
         strokeBox.union(damage)
         boxLeft = strokeBox.left
@@ -439,7 +446,7 @@ class GlWetPadInk {
      * rather than the size of the stroke. A long stroke is nearly all somewhere else, and a
      * rectangle test throws it out before a vertex is transformed.
      */
-    private fun drawBuffer(program: InkShader, store: GeometryStore, pieces: List<Piece>) {
+    private fun drawBuffer(program: InkShader, store: GeometryStore, pieces: List<Piece>, region: PixelRect) {
         if (pieces.isEmpty()) return
         if (!store.bindForDraw(contextGen)) return
         store.bindAttributes(program)
@@ -449,7 +456,7 @@ class GlWetPadInk {
         var count = 0
         for (piece in pieces) {
             val bounds = piece.bounds
-            if (bounds != null && !bounds.intersects(damage)) continue
+            if (bounds != null && !bounds.intersects(region)) continue
             val slice = piece.slice
             if (start >= 0 && slice.indexOffset == start + count) {
                 count += slice.indexCount
@@ -542,7 +549,7 @@ class GlWetPadInk {
     private companion object {
         const val TAG = "xnotes.gl"
 
-        /** The largest scratch side, in pixels; a damage wider than this is clamped to it. */
+        /** The largest scratch side, in pixels. Larger damage is drawn in several bounded regions. */
         const val SCRATCH_MAX = 1024
 
         const val SCRATCH_MIN = 16
