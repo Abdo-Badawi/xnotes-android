@@ -151,6 +151,7 @@ class GlWetPad(context: Context, onTop: Boolean = false) : SurfaceView(context),
             if (field == on) return
             field = on
             visibility = if (on) VISIBLE else GONE
+            Log.i(TAG, "front buffering ${if (on) "enabled" else "disabled"}")
         }
 
     init {

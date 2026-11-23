@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect as AndroidRect
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.PixelCopy
 import android.view.Window
 import com.xnotes.core.geometry.Pt
@@ -83,6 +84,9 @@ class FrontInk(
     /** Whether the pad is painting the stroke under the pen. */
     var live = false
         private set
+
+    /** One diagnostic line for each time the pad is not ready enough to take a stroke. */
+    private var fallbackLogged = false
 
     /** An item whose pixels are still the pad's, and the page whose cache takes it, if any. */
     private class Held(val item: CanvasItem, val page: Page?)
@@ -201,6 +205,13 @@ class FrontInk(
         decided = true
         // Turned off for this device, so there is no pad to consult and nothing to time against it.
         if (!pad.frontBuffering) return
+        if (!pad.ready) {
+            if (!fallbackLogged) {
+                fallbackLogged = true
+                Log.i(TAG, "front buffer not ready; using CanvasView fallback")
+            }
+            return
+        }
         if (ItemMesher.passFor(stroke) != InkPass.OPAQUE) return
         // A rotated view is a rotation, and the ink shader has room for a scroll and a zoom.
         if (state.rotationDeg != 0) return
@@ -308,6 +319,7 @@ class FrontInk(
     private fun start(scrollX: Double, scrollY: Double, zoom: Double, clip: PixelRect): Boolean {
         live = pad.beginStroke(scrollX, scrollY, zoom, SAMPLES, clip)
         if (!live) return false
+        fallbackLogged = false
         // A shorter run on the front buffer, because there the tail is what a present has to clear
         // and rebuild, and its extent is the size of everything that present does.
         runPoints = FRONT_RUN_POINTS
@@ -453,6 +465,8 @@ class FrontInk(
     }
 
     private companion object {
+        private const val TAG = "xnotes.gl"
+
         /** Points a run holds on the ordinary path, matching the wet cache's own bake size. */
         const val WET_RUN_POINTS = 96
 

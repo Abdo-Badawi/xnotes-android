@@ -753,7 +753,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             it.recentColors = recentColors
             it.toolbarColorCount = toolbarColorCount
             it.toolbarLayout = canvasToolbarLayout
-            it.pad.frontBuffering = !settings.prefs.disableFrontBuffering
+            it.pad.frontBuffering = frontBufferOn(settings.prefs)
             it.pickColor(activeColorIndex)
             // A style tuned on the canvas is the same style, so it persists through this editor.
             it.onToolStyleChanged = { settingsDirty = true }
@@ -2842,6 +2842,27 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         view.requestRender()
     }
 
+    /**
+     * The front buffer is the low-latency path only when the platform can deliver driver-cadence
+     * stylus samples. Without unbuffered dispatch it can add a composition step; older devices
+     * therefore use the ordinary CanvasView path automatically. The user's explicit disable still
+     * wins, and the pad verifies the actual EGL mode again when its surface comes up.
+     */
+    private fun frontBufferOn(p: Preferences): Boolean {
+        val unbuffered = android.os.Build.VERSION.SDK_INT >= 30
+        val mutable = com.xnotes.gl.FrontBufferProbe.mutableRenderBufferSupported()
+        val on = com.xnotes.gl.FrontBufferPolicy.useFrontBuffer(
+            userDisabled = p.disableFrontBuffering,
+            unbufferedDispatchSupported = unbuffered,
+            mutableRenderBufferSupported = mutable,
+        )
+        android.util.Log.i(
+            "xnotes.gl",
+            "front buffer auto: disabled=${p.disableFrontBuffering} unbuffered=$unbuffered mutable=$mutable -> $on",
+        )
+        return on
+    }
+
     private fun applyPagePrefsToState(p: Preferences) {
         palette = buildPalette(p)
         com.xnotes.platform.AppNightMode.follow(appContext, p.uiAppearance)
@@ -2859,8 +2880,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         )
         infiniteOrNull?.applyZoomRange(p.canvasMinZoomPercent, p.canvasMaxZoomPercent)
         // Both surfaces' pads: the switch is about the device, not about one of them.
-        pad.frontBuffering = !p.disableFrontBuffering
-        infiniteOrNull?.pad?.frontBuffering = !p.disableFrontBuffering
+        val frontBuffer = frontBufferOn(p)
+        pad.frontBuffering = frontBuffer
+        infiniteOrNull?.pad?.frontBuffering = frontBuffer
         state.pageColorOverride = if (p.defaultTemplate == "color") p.pageColor else null
         val theme = "$palette|${state.pageColorOverride}"
         if (thumbnailTheme != theme) {

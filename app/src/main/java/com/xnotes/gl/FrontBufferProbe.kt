@@ -16,6 +16,20 @@ object FrontBufferProbe {
     /** EGL_MUTABLE_RENDER_BUFFER_BIT_KHR, absent from the EGL14 constants. */
     const val MUTABLE_RENDER_BUFFER_BIT = 0x1000
 
+    private val mutableRenderBuffer: Boolean? by lazy {
+        val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+        if (display == EGL14.EGL_NO_DISPLAY) {
+            false
+        } else {
+            val extensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS)
+            if (extensions.isNullOrEmpty()) null // display not initialised yet: let the pad verify it
+            else "EGL_KHR_mutable_render_buffer" in extensions
+        }
+    }
+
+    /** Whether the display advertises the extension that can make the pad a front buffer; null = unknown. */
+    fun mutableRenderBufferSupported(): Boolean? = mutableRenderBuffer
+
     fun log() {
         val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (display == EGL14.EGL_NO_DISPLAY) {
