@@ -1423,7 +1423,12 @@ class CanvasState(
         val work = {
             var entry: CacheEntry? = null
             try {
-                if (isInkBuildCurrent(page, gen, prefetch)) entry = renderInk(page, res, items, withFlow)
+                // Speculative ink queued before a pointer landed must not allocate a page-sized
+                // surface while that pointer is still active. Visible builds are never skipped.
+                val deferred = prefetch && inputActive
+                if (!deferred && isInkBuildCurrent(page, gen, prefetch)) {
+                    entry = renderInk(page, res, items, withFlow)
+                }
             } finally {
                 postToMain {
                     val mine = pendingInk[page] === request
@@ -1433,7 +1438,8 @@ class CanvasState(
                         caches[page] = entry
                         staleInk.remove(page)
                         // The build painted from what it read then; a repair since, as a playhead crossing ink, would be lost.
-                        meanwhile?.let { repaintCached(entry, page, it) }
+                        // An empty build owns no pixels, so there is nothing to replay and the shared sentinel must not be touched.
+                        if (!entry.empty) meanwhile?.let { repaintCached(entry, page, it) }
                     }
                     // Repaint either way. A build the page outgrew mid-flight (a margin drag bumps the
                     // generation on every tick) is discarded here, and the draw loop is what schedules
@@ -1493,6 +1499,10 @@ class CanvasState(
         // an unannotated imported PDF otherwise carries one such surface per cached page.
         val drawsFlow = includeFlow && (hasFlowContent?.invoke(page) ?: (paintFlow != null))
         if (items.under.isEmpty() && items.over.isEmpty() && !drawsFlow) {
+            // The page may still hold highlighter ribbons, whose geometry is built by
+            // highlighterCacheFor() outside the ink cache. Register it so leaving the band also
+            // releases that geometry instead of leaking it for the session.
+            noteGeometryBuilt(page)
             return CacheEntry(emptyInkSurface, res, cover, empty = true)
         }
         val w = ceil(cover.w * res).toInt().coerceAtLeast(1)
@@ -1554,7 +1564,12 @@ class CanvasState(
         ) {
             return existing
         }
-        return buildHighlighter(stroke, res, g, opaque).also { hlCaches[stroke] = it }
+        return buildHighlighter(stroke, res, g, opaque).also {
+            hlCaches[stroke] = it
+            // Its ribbon geometry lives on the Stroke, outside [caches]; register the page so
+            // releaseGeometryExcept() gives it back when the page leaves the band.
+            noteGeometryBuilt(page)
+        }
     }
 
     private fun buildHighlighter(stroke: Stroke, res: Double, g: StrokeGeometry, opaque: Rgba): HighlighterCacheEntry {
@@ -1801,7 +1816,13 @@ class CanvasState(
         repairSharpInk(page, dirtyRect) // erase from the sharp ink layer in place, no re-render
         if (pendingSharp) pendingSharpEdits.add(page to dirtyRect)
         val entry = caches[page] ?: return false
-        if (entry.empty) return false // the sentinel owns no pixels; a rebuild is the correct repair
+        if (entry.empty) {
+            // The sentinel owns no pixels, so it can never be repaired in place. Drop it and let the
+            // next draw rebuild from the page's current items; a redo that reintroduced ink would
+            // otherwise stay invisible until some unrelated invalidation.
+            invalidatePage(page)
+            return false
+        }
         repaintCached(entry, page, dirtyRect)
         if (page in pendingInk) repairedMeanwhile[page] = repairedMeanwhile[page]?.union(dirtyRect) ?: dirtyRect
         return true
@@ -1809,6 +1830,7 @@ class CanvasState(
 
     /** Clear [rect] (page-local) of [entry]'s ink and paint [page]'s items there again. */
     private fun repaintCached(entry: CacheEntry, page: Page, rect: Rect) {
+        if (entry.empty) return // never obtain a renderer for the shared 1x1 sentinel
         val cover = entry.cover
         val r = entry.surface.renderer()
         r.save()
@@ -2118,12 +2140,21 @@ class CanvasState(
      * pressure passes rebuilds normally; the visible page is never evicted. Main thread only.
      */
     fun trimMemoryCaches() {
-        val keep = visiblePageRange()?.let { range ->
-            val pages = document.pages
-            HashSet<Page>(range.last - range.first + 1).apply {
-                for (i in range) pages.getOrNull(i)?.let { add(it) }
-            }
-        } ?: emptySet()
+        val keep = HashSet<Page>()
+        fun addRange(range: IntRange) {
+            for (i in range) document.pages.getOrNull(i)?.let { keep.add(it) }
+        }
+        val visible = visiblePageRange()
+        if (visible != null) {
+            addRange(visible)
+        } else {
+            // A null range is "unknown", not proof that nothing is on screen: the viewport can sit in
+            // a page gap or be transiently unlaid-out. Keep the last valid band; relayout/full
+            // invalidation clear it, so this can never retain a previous document's pages.
+            keep.addAll(bandKeep ?: emptySet())
+        }
+        // The paginated flip draws the adjacent row even though only currentRow is "visible".
+        linkedNeighbourRow()?.let { row -> rowRanges().getOrNull(row)?.let { addRange(it) } }
         applyBandKeep(keep)
         dropCachesExcept(keep)
         for ((page, request) in pendingBg) if (page !in keep) request.token.cancel()

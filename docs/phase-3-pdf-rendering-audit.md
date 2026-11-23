@@ -858,3 +858,32 @@ This table is the current status after the Phase 3 high-priority commits (`79238
 - Capture/sharing responsiveness until M1 is refactored, and the refactor itself.
 - Fling-phase scheduling (deferral ends at pointer-up; visible priority and promotion are the only
   mechanisms during inertia).
+
+
+---
+
+## O. Follow-up correctness status (post-audit fixes)
+
+The read-only audit of `1b09c361` found three confirmed issues in the Medium tranche and three
+defensive gaps. They are fixed in the follow-up commit documented in
+`docs/PHASE_3_HIGH_PRIORITY_FIXES.md` section O.
+
+| Finding | Status | Evidence |
+|---|---|---|
+| Redo after an empty ink sentinel left ink invisible | **Resolved** | `repairRegion` invalidates an empty page; `repairInkRegions` then lets the normal draw loop rebuild. Tests: `redoAfterAnEmptySentinelRebuildsAFullInkSurface`, `repeatedUndoRedoCyclesNeverLeaveAStaleSentinel`. |
+| Highlighter-only geometry escaped band eviction | **Resolved** | The sentinel path and `highlighterCacheFor` register the page via `noteGeometryBuilt`. Test: `aHighlighterOnlyPageReleasesItsGeometryWhenItLeavesTheBand`. |
+| Memory trim could evict the linked neighbour during a paginated flip | **Resolved** | `trimMemoryCaches` adds `linkedNeighbourRow` pages to the keep set. Test: `trimKeepsTheLinkedNeighbourDuringAPaginatedFlip`. |
+| Null `visiblePageRange()` made trim evict everything | **Resolved defensively** | Falls back to `bandKeep`, which `relayout`/full invalidation clear. Tests: `trimFallsBackToThePreviousBandWhenVisibleRangeIsNull`, `trimWithNullVisibleRangeAndNoPreviousBandDoesNotCrash`, `documentReplacementCannotRetainAnOldBandsPages`. |
+| Pending repair could target the shared sentinel | **Resolved defensively** | `scheduleInk` skips replay for empty entries; `repaintCached` rejects empty entries. Test: `anEmptyBuildNeverPaintsAPendingRepairIntoSentinel`. |
+| Queued speculative ink could run after input starts | **Resolved defensively** | `scheduleInk` skips `prefetch && inputActive` before `renderInk`. Test: `aQueuedSpeculativeInkBuildSkipsWhenInputIsActive`. |
+| M1 main-thread capture renders (C5) | **Still deferred** | Not part of this correctness follow-up. |
+| M3 byte budget (C8) | **Still deferred** | No device baseline; pressure trim remains coarse. |
+| C11 filtered-render double allocation | **Still deferred** | Unchanged. |
+| C13 telemetry/benchmarks/androidTest | **Still deferred** | No module added. |
+
+### Remaining hardware-only validation
+
+The correctness fixes are covered by JVM cache/scheduler tests. Physical-device testing is still
+required for actual touch lifecycle edge cases, `onTrimMemory`, peak PSS, input latency during
+background work, and the visual page-flip path under real rendering pressure. No device-level
+performance improvement is claimed.

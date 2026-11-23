@@ -245,6 +245,26 @@ class PdfRenderSchedulingTest {
     }
 
     @Test
+    fun aQueuedSpeculativeInkBuildSkipsWhenInputIsActive() {
+        val st = state(pageCount = 1)
+        val page = st.document.pages[0]
+        st.updateCacheBand()
+        assertNull(st.cacheForOrSchedule(page, prefetch = true))
+        assertEquals(1, inkQueue.size)
+
+        st.beginInput()
+        runInk()
+
+        assertTrue("a speculative build must not allocate while input is active", factory.created.isEmpty())
+        assertTrue(inkQueue.isEmpty())
+        // Cleanup ran: a fresh visible request is accepted, not blocked by a stale pending mark.
+        assertNull(st.cacheForOrSchedule(page))
+        assertEquals(1, inkQueue.size)
+        runInk()
+        assertNotNull("visible ink still builds while input is active", st.rawInkCache(page))
+    }
+
+    @Test
     fun inputDoesNotCancelAMarkupRepair() {
         val st = state(pageCount = 1)
         val page = st.document.pages[0]

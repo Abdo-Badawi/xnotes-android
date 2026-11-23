@@ -114,4 +114,31 @@ class GeometryEvictionTest {
         val hits = SelectionMath.bandMembers(pages, st.pageRects, band)
         assertTrue("slack must keep off-page ink selectable", hits.any { it.item === overflow })
     }
+    @Test fun aHighlighterOnlyPageReleasesItsGeometryWhenItLeavesTheBand() {
+        val stroke = Stroke(
+            Tool.HIGHLIGHTER,
+            ToolDefaults.configFor(Tool.HIGHLIGHTER),
+            listOf(Sample(20.0, 20.0, 1.0), Sample(120.0, 20.0, 1.0), Sample(160.0, 60.0, 1.0)),
+        )
+        val page = Page(200.0, 200.0, mutableListOf(stroke))
+        val st = CanvasState(Document(mutableListOf(page)), FakeSurfaceFactory(), Palette.DEFAULT).apply {
+            viewportW = 800
+            viewportH = 1000
+            relayout()
+        }
+        assertTrue(st.cacheFor(page).empty) // highlighters live outside the ink cache
+        st.highlighterCacheFor(stroke, page)
+        assertTrue("building the ribbon also builds its geometry", stroke.hasGeometry)
+
+        st.dropCachesExcept(emptySet())
+
+        assertFalse("a highlighter-only page must release its ribbons like any other", stroke.hasGeometry)
+
+        // Rebuilding still produces a normal highlighter cache and geometry.
+        assertTrue(st.cacheFor(page).empty)
+        val rebuilt = st.highlighterCacheFor(stroke, page)
+        assertTrue(stroke.hasGeometry)
+        assertTrue(rebuilt.surface.width > 1)
+    }
+
 }

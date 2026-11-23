@@ -20,11 +20,24 @@ class MemoryPressureCacheTest {
     private val factory = FakeSurfaceFactory()
     private val paints = ArrayList<Page>()
 
-    private fun state(pageCount: Int = 4): CanvasState {
+    private fun state(pageCount: Int = 4, vh: Int = 120): CanvasState {
         val pages = (0 until pageCount).mapTo(mutableListOf()) { Page(200.0, 200.0, pdfPage = it) }
         return CanvasState(Document(pages), factory, Palette.DEFAULT).apply {
             viewportW = 400
-            viewportH = 120
+            viewportH = vh
+            maxCachePx = 4096.0
+            relayout()
+            paintPageBackground = { page, _, _, _, _, _ -> paints += page }
+        }
+    }
+
+    private fun paginatedState(pageCount: Int = 4): CanvasState {
+        val pages = (0 until pageCount).mapTo(mutableListOf()) { Page(200.0, 200.0, pdfPage = it) }
+        return CanvasState(Document(pages), factory, Palette.DEFAULT).apply {
+            viewingMode = ViewingMode.SINGLE
+            verticalScroll = false
+            viewportW = 400
+            viewportH = 300
             maxCachePx = 4096.0
             relayout()
             paintPageBackground = { page, _, _, _, _, _ -> paints += page }
@@ -104,4 +117,82 @@ class MemoryPressureCacheTest {
 
         assertFalse("evicted page surfaces are not recycled", built.any { it.recycled })
     }
+    @Test
+    fun trimKeepsTheLinkedNeighbourDuringAPaginatedFlip() {
+        val st = paginatedState()
+        val current = st.document.pages[0]
+        val neighbour = st.document.pages[1]
+        val unrelated = st.document.pages.subList(2, 4)
+        st.flipOffsetX = 40.0 // the adjacent row is being drawn with the current one
+        for (p in st.document.pages) {
+            st.cacheFor(p)
+            st.backgroundFor(p)
+        }
+        assertNotNull(st.rawInkCache(neighbour))
+        assertNotNull(st.rawBackgroundCache(neighbour))
+
+        st.trimMemoryCaches()
+
+        assertNotNull("the current page survives the trim", st.rawInkCache(current))
+        assertNotNull("the drawn neighbour survives the trim", st.rawInkCache(neighbour))
+        assertNotNull("and its background", st.rawBackgroundCache(neighbour))
+        for (p in unrelated) {
+            assertNull("unrelated pages are still evicted", st.rawInkCache(p))
+            assertNull("and their backgrounds", st.rawBackgroundCache(p))
+        }
+    }
+
+    @Test
+    fun trimFallsBackToThePreviousBandWhenVisibleRangeIsNull() {
+        val st = state(pageCount = 10, vh = 300)
+        val inBand = st.document.pages[1]
+        val far = st.document.pages[5]
+        st.updateCacheBand()
+        st.cacheFor(inBand)
+        st.cacheFor(far)
+
+        // Put the viewport wholly inside the gap between rows.
+        st.viewportH = 20
+        st.scrollY = 250.0
+        assertNull("no page intersects this gap", st.visiblePageRange())
+
+        st.trimMemoryCaches()
+
+        assertNotNull("the previous band is a safe fallback", st.rawInkCache(inBand))
+        assertNull("an unrelated page is still evicted", st.rawInkCache(far))
+    }
+
+    @Test
+    fun trimWithNullVisibleRangeAndNoPreviousBandDoesNotCrash() {
+        val st = state(pageCount = 2)
+        val page = st.document.pages[1]
+        st.cacheFor(page)
+        st.viewportH = 20
+        st.scrollY = 250.0
+        assertNull(st.visiblePageRange())
+
+        st.trimMemoryCaches() // bandKeep is still null: no fallback, no crash
+
+        assertNull(st.rawInkCache(page))
+    }
+
+    @Test
+    fun documentReplacementCannotRetainAnOldBandsPages() {
+        val st = state(pageCount = 4, vh = 300)
+        st.updateCacheBand()
+        val oldPage = st.document.pages[1]
+        st.cacheFor(oldPage)
+
+        st.document = Document((0 until 4).mapTo(mutableListOf()) { Page(200.0, 200.0, pdfPage = it + 10) })
+        st.invalidateAllCaches()
+        st.relayout()
+        assertNull("the old cache was cleared with the document", st.rawInkCache(oldPage))
+
+        st.viewportH = 20
+        st.scrollY = 250.0
+        st.trimMemoryCaches()
+
+        assertNull("a previous document's page is never retained by the fallback", st.rawInkCache(oldPage))
+    }
+
 }

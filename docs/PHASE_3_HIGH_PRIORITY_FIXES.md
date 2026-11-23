@@ -953,3 +953,146 @@ was changed here.
 6. **Physical-device testing still required:** real input latency, frame stability during
    handwriting with background PDF work, `onTrimMemory` behavior, peak PSS, GC, and capture UI
    responsiveness after an eventual M1 refactor.
+
+
+---
+
+## O. Medium-Priority Correctness Follow-Up
+
+Read-only audit of `1b09c361` found three confirmed bugs and three defensive gaps in the M2–M4
+tranche. This section documents the fixes and tests added in the follow-up commit. No new
+optimisation, resolution, transform, PDFium-threading, executor, or SharpFrame-ownership change was
+made.
+
+### O.1 FIX 1 — Undo/redo after an empty sentinel now rebuilds
+
+**Confirmed bug.** `repairRegion()` refused to paint into an empty sentinel and returned `false`
+(`CanvasState.repairRegion`). `repairInkRegions()` ignored that result, so after a page had been
+rebuilt as an empty sentinel, a redo that reintroduced ink scheduled nothing. The redone stroke could
+stay invisible until an unrelated invalidation.
+
+**Fix.** When `repairRegion()` encounters `CacheEntry.empty`, it now calls `invalidatePage(page)`
+before returning false. Existing generation bumps, pending-build identity checks and cancellation
+remain in the normal invalidation path; the draw loop then schedules the rebuild through
+`cacheForOrSchedule`. The shared sentinel is never painted.
+
+**Tests (`EmptyInkSurfaceTest`):**
+- `redoAfterAnEmptySentinelRebuildsAFullInkSurface`
+- `repeatedUndoRedoCyclesNeverLeaveAStaleSentinel`
+
+Both verify a real surface with painted ribbon runs, not just that invalidation was called.
+
+### O.2 FIX 2 — Highlighter-only geometry is registered for eviction
+
+**Confirmed bug.** The empty-sentinel branch returned before `noteGeometryBuilt(page)`, and
+`highlighterCacheFor()` built highlighter ribbon geometry without registering the page. For a page
+containing only highlighters (or one whose ink cache stayed empty), `dropCachesExcept()` removed the
+highlighter bitmap but `releaseGeometryExcept()` could not find the page, so `Stroke.geometry`
+survived for the session.
+
+**Fix.** Registration happens in both relevant lifecycle points:
+- the empty-sentinel branch calls `noteGeometryBuilt(page)`;
+- `highlighterCacheFor()` calls `noteGeometryBuilt(page)` when it builds a highlighter cache.
+
+No stroke geometry, tessellation, simplification or rendering code was changed.
+
+**Test (`GeometryEvictionTest`):**
+- `aHighlighterOnlyPageReleasesItsGeometryWhenItLeavesTheBand`
+
+The test builds a highlighter-only page, confirms geometry exists, evicts it, confirms geometry is
+released, then rebuilds and confirms normal highlighter cache/geometry creation still works.
+
+### O.3 FIX 3 — Linked neighbour survives memory trimming
+
+**Confirmed rendering risk.** In paginated mode `visiblePageRange()` covers only `currentRow`, while
+`CanvasView` draws the adjacent linked row during a flip. A trim during that transition could evict
+the visible neighbour.
+
+**Fix.** `trimMemoryCaches()` now adds every page of `linkedNeighbourRow()` to the keep set when a
+flip is active. Only that row is added; unrelated pages are still evicted, and each pane retains its
+own `CanvasState`.
+
+**Test (`MemoryPressureCacheTest`):**
+- `trimKeepsTheLinkedNeighbourDuringAPaginatedFlip`
+
+### O.4 FIX 4 — Null visible range falls back to the previous band
+
+**Defensive fix.** `visiblePageRange()` is a visibility test, not a layout-validity test. It can be
+null before first layout, with a temporary zero viewport, with stale layout state, or when the
+viewport sits wholly inside a page gap. The old `emptySet()` fallback evicted all rendered caches in
+those states.
+
+**Fix.** When the visible range is null, `trimMemoryCaches()` starts the keep set from
+`bandKeep ?: emptySet()`. `relayout()` and full cache invalidation clear `bandKeep`, so a previous
+document's pages cannot be retained; the fallback is bounded by the last valid band. The linked
+neighbour row is added in either case.
+
+**Tests (`MemoryPressureCacheTest`):**
+- `trimFallsBackToThePreviousBandWhenVisibleRangeIsNull`
+- `trimWithNullVisibleRangeAndNoPreviousBandDoesNotCrash`
+- `documentReplacementCannotRetainAnOldBandsPages`
+
+The page-gap case is exercised directly by setting the viewport inside the gap and asserting
+`visiblePageRange()` is null before trimming.
+
+### O.5 FIX 5 — No repair may target the shared sentinel
+
+**Defensive fix.** A pending empty ink build could carry a `repairedMeanwhile` region into
+`repaintCached(entry, ...)`, obtaining a renderer for the shared 1×1 sentinel. The scheduling path
+now skips the repair replay when the published entry is empty, and `repaintCached()` itself returns
+early for an empty entry as a second guard. Normal non-empty repair behaviour is unchanged.
+
+**Test (`EmptyInkSurfaceTest`):**
+- `anEmptyBuildNeverPaintsAPendingRepairIntoSentinel`
+
+The test records all renderer operations on the sentinel surface and asserts none occur; it then
+adds ink and confirms the page still obtains a full cache.
+
+### O.6 FIX 6 — Queued speculative ink yields to active input
+
+**Defensive scheduling fix.** `prefetchAndPrune()` already stopped *creating* speculative ink work
+while `inputActive`, but work queued before the pointer landed could still allocate and render.
+`scheduleInk` now checks `prefetch && inputActive` immediately before `renderInk`; it skips the
+surface allocation and still runs the normal `finally` cleanup and identity-checked pending removal.
+Visible builds (`prefetch = false`) are not skipped.
+
+**Test (`PdfRenderSchedulingTest`):**
+- `aQueuedSpeculativeInkBuildSkipsWhenInputIsActive`
+
+The test queues a speculative build, starts input, runs the queue, asserts no surface was allocated,
+then proves a visible request still builds and that the pending mark was cleaned.
+
+### O.7 Files changed
+
+| File | Change |
+|---|---|
+| `app/src/main/java/com/xnotes/canvas/CanvasState.kt` | Sentinel repair invalidates; highlighter geometry registration; flip-aware and null-safe trim keep set; `repaintCached` empty guard; speculative ink input deferral |
+| `app/src/test/java/com/xnotes/canvas/EmptyInkSurfaceTest.kt` | Three follow-up tests (FIX 1 and FIX 5) |
+| `app/src/test/java/com/xnotes/canvas/GeometryEvictionTest.kt` | Highlighter-only geometry eviction test (FIX 2) |
+| `app/src/test/java/com/xnotes/canvas/MemoryPressureCacheTest.kt` | Four tests (FIX 3 and FIX 4) |
+| `app/src/test/java/com/xnotes/canvas/PdfRenderSchedulingTest.kt` | Queued speculative ink input test (FIX 6) |
+| `docs/PHASE_3_HIGH_PRIORITY_FIXES.md` | This section |
+| `docs/phase-3-pdf-rendering-audit.md` | Follow-up status table |
+
+### O.8 Verification
+
+- `:app:compileDebugKotlin` — **BUILD SUCCESSFUL**.
+- `:app:testDebugUnitTest` — **BUILD SUCCESSFUL**: **2598 tests, 0 failures, 0 errors, 0 skipped**
+  across 209 suites (was 2589; 9 new tests).
+  - `PdfRenderSchedulingTest`: 23/23.
+  - `MemoryPressureCacheTest`: 8/8.
+  - `EmptyInkSurfaceTest`: 10/10.
+  - `GeometryEvictionTest`: 6/6.
+- `:app:assembleDebug` — **BUILD SUCCESSFUL**.
+
+`lintDebug` remains unusable as a gate because of the repository's pre-existing 302-error baseline;
+no JNI, renderer-quality or `minSdk` change is part of this follow-up.
+
+### O.9 Remaining limitations
+
+- These are JVM scheduler/cache tests; they do not measure device latency, PSS or frame time.
+- `trimMemoryCaches()` is still a coarse visible/band eviction, not a byte budget.
+- Linked-neighbour retention covers the existing paginated flip path only; no new gesture
+  heuristics were introduced.
+- Physical-device validation of memory pressure, input latency, and a real PDF flip remains
+  outstanding.
