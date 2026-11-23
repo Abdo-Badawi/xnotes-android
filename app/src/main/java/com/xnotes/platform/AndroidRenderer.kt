@@ -20,6 +20,7 @@ import com.xnotes.core.pal.FontSpec
 import com.xnotes.core.pal.Pen
 import com.xnotes.core.pal.RasterSurface
 import com.xnotes.core.pal.Renderer
+import com.xnotes.core.pal.RibbonSmoothing
 import com.xnotes.core.pal.TextFlags
 import com.xnotes.core.vector.VectorContour
 import com.xnotes.core.vector.VectorSeg
@@ -168,9 +169,16 @@ class AndroidRenderer(private val canvas: Canvas) : Renderer {
         if (count <= 0) return
         fillPaint.color = color.toArgb()
         val path = Path().apply { fillType = Path.FillType.WINDING }
-        if (count == 1 && radii[from] > 0f) path.addCircle(centers[2 * from], centers[2 * from + 1], radii[from], Path.Direction.CW)
-        for (i in from until from + count - 1) {
-            addCapsule(path, centers[2 * i], centers[2 * i + 1], radii[i], centers[2 * i + 2], centers[2 * i + 3], radii[i + 1])
+        if (count == 1) {
+            if (radii[from] > 0f) path.addCircle(centers[2 * from], centers[2 * from + 1], radii[from], Path.Direction.CW)
+        } else {
+            RibbonSmoothing.forEach(
+                centers, radii, from, count,
+                point = { _, _, _ -> },
+                segment = { x0, y0, r0, x1, y1, r1 ->
+                    addCapsule(path, x0.toFloat(), y0.toFloat(), r0.toFloat(), x1.toFloat(), y1.toFloat(), r1.toFloat())
+                },
+            )
         }
         canvas.drawPath(path, fillPaint)
     }

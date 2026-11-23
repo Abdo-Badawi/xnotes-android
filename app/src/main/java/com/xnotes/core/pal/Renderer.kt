@@ -168,25 +168,24 @@ interface Renderer {
     fun fillDiskRibbon(centers: FloatArray, radii: FloatArray, from: Int, count: Int, color: Rgba) {
         if (count <= 0) return
         val n = DoubleArray(4)
-        for (i in from until from + count - 1) {
-            val x0 = centers[2 * i].toDouble()
-            val y0 = centers[2 * i + 1].toDouble()
-            val x1 = centers[2 * i + 2].toDouble()
-            val y1 = centers[2 * i + 3].toDouble()
-            val r0 = radii[i].toDouble()
-            val r1 = radii[i + 1].toDouble()
-            if (Geometry.capsule(x0, y0, r0, x1, y1, r1, n) == Geometry.SWALLOWED) continue
-            val band = listOf(
-                Pt(x0 + r0 * n[0], y0 + r0 * n[1]),
-                Pt(x1 + r1 * n[0], y1 + r1 * n[1]),
-                Pt(x1 + r1 * n[2], y1 + r1 * n[3]),
-                Pt(x0 + r0 * n[2], y0 + r0 * n[3]),
-            )
-            fillPolygon(band, color, FillRule.NONZERO)
-        }
-        for (i in from until from + count) {
-            if (radii[i] > 0f) fillCircle(Pt(centers[2 * i].toDouble(), centers[2 * i + 1].toDouble()), radii[i].toDouble(), color)
-        }
+        RibbonSmoothing.forEach(
+            centers, radii, from, count,
+            point = { x, y, r -> if (r > 0.0) fillCircle(Pt(x, y), r, color) },
+            segment = { x0, y0, r0, x1, y1, r1 ->
+                if (Geometry.capsule(x0, y0, r0, x1, y1, r1, n) != Geometry.SWALLOWED) {
+                    fillPolygon(
+                        listOf(
+                            Pt(x0 + r0 * n[0], y0 + r0 * n[1]),
+                            Pt(x1 + r1 * n[0], y1 + r1 * n[1]),
+                            Pt(x1 + r1 * n[2], y1 + r1 * n[3]),
+                            Pt(x0 + r0 * n[2], y0 + r0 * n[3]),
+                        ),
+                        color,
+                        FillRule.NONZERO,
+                    )
+                }
+            },
+        )
     }
 
     // --- outlines (cosmetic for chrome, page-space for shapes) ---
