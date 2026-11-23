@@ -39,7 +39,7 @@ class MarkupBakeTest {
         this.maxCachePx = maxCachePx
         relayout()
         runAsync = { queued += it }
-        paintPageBackground = { _, _, _, _ -> paints++ }
+        paintPageBackground = { _, _, _, _, _, _ -> paints++ }
     }
 
     private fun pdfPage() = Page(200.0, 200.0, pdfPage = 0)

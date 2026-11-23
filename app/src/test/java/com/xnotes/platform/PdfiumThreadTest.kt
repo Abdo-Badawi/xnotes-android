@@ -40,6 +40,39 @@ class PdfiumThreadTest {
         assertEquals(listOf("interactive", "visible", "thumb 1", "thumb 2", "warm"), order)
     }
 
+    @Test fun sharpViewportOutranksVisibleAndVisibleOutranksRepair() {
+        val (worker, gate) = heldWorker()
+        val order = Collections.synchronizedList(ArrayList<String>())
+        val tasks = listOf(
+            worker.submit(PdfPriority.WARM) { order += "warm" },
+            worker.submit(PdfPriority.BG_REPAIR) { order += "repair" },
+            worker.submit(PdfPriority.VISIBLE_RENDER) { order += "visible" },
+            worker.submit(PdfPriority.SHARP) { order += "sharp" },
+            worker.submit(PdfPriority.INTERACTIVE) { order += "interactive" },
+            worker.submit(PdfPriority.VISIBLE_RENDER) { order += "visible 2" },
+        )
+        gate.countDown()
+        tasks.forEach { it.await() }
+        assertEquals(
+            listOf("interactive", "sharp", "visible", "visible 2", "repair", "warm"),
+            order,
+        )
+    }
+
+    @Test fun aRunningJobObservesItsTokenBeingCancelled() {
+        val worker = PdfiumThread("test-pdfium")
+        val token = CancelToken()
+        val started = CountDownLatch(1)
+        val task = worker.submit(PdfPriority.INTERACTIVE, token) {
+            started.countDown()
+            while (!token.isCancelled) Thread.sleep(1)
+            "stopped"
+        }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        token.cancel()
+        assertEquals("stopped", task.await())
+    }
+
     @Test fun cancellingDropsAQueuedJobAndFreesItsWaiterWhileTheThreadIsBusy() {
         val (worker, gate) = heldWorker()
         val token = CancelToken()

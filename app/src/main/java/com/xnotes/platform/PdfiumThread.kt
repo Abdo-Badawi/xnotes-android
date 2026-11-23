@@ -5,8 +5,15 @@ import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-/** How urgent a PDFium job is, most urgent first. */
-enum class PdfPriority { INTERACTIVE, VISIBLE_RENDER, BG_REPAIR, SHARP, THUMBNAIL, SEARCH, WARM }
+/**
+ * How urgent a PDFium job is, most urgent first.
+ *
+ * [INTERACTIVE] is for work a user is waiting on (opening a document, a link or text tap, a
+ * screenshot capture). [SHARP] is the full-resolution viewport render: it is what the user is
+ * looking at past the page-cache resolution cap, so it sits above the soft page caches. [WARM] is
+ * speculative work (nearby-page prefetch, link/text warming) and must never delay the page on screen.
+ */
+enum class PdfPriority { INTERACTIVE, SHARP, VISIBLE_RENDER, BG_REPAIR, THUMBNAIL, SEARCH, WARM }
 
 /** Cancels the PDFium jobs it is given: a queued one never runs and its waiter returns at once. */
 class CancelToken {

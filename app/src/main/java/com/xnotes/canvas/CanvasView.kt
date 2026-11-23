@@ -10,8 +10,9 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import com.xnotes.R
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.geometry.Rect
 import com.xnotes.core.model.Page
@@ -41,11 +42,19 @@ class CanvasView @JvmOverloads constructor(
                 st.devicePxPerDp = resources.displayMetrics.density.toDouble()
                 // Rasterize newly visible pages off the UI thread so scrolling never
                 // stalls while a page is built; publish the surface back on the main
-                // thread and ask for a repaint.
+                // thread and ask for a repaint. Ink work and PDF background work have
+                // separate workers: a PDF render waiting on the shared PDFium thread
+                // must not hold up an ink-cache rebuild (and vice versa).
                 st.runAsync = { work ->
-                    val ex = cacheExecutor
+                    val ex = inkExecutor
                     if (ex != null && !ex.isShutdown) ex.execute(work) else work()
                 }
+                st.runAsyncBackground = { work ->
+                    val ex = backgroundExecutor
+                    if (ex != null && !ex.isShutdown) ex.execute(work) else work()
+                }
+                st.backgroundQueueDepth = { backgroundExecutor?.queue?.size ?: 0 }
+                st.inkQueueDepth = { inkExecutor?.queue?.size ?: 0 }
                 st.postToMain = { work -> mainHandler.post(work) }
                 st.onCacheReady = { requestRender() }
             }
@@ -54,8 +63,17 @@ class CanvasView @JvmOverloads constructor(
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** Single background thread that builds page caches; lives while the view is attached. */
-    private var cacheExecutor: ExecutorService? = null
+    /** Single background thread that builds ink page caches; lives while the view is attached. */
+    private var inkExecutor: ThreadPoolExecutor? = null
+
+    /** Single background thread for PDF-backed page backgrounds and the sharp viewport. */
+    private var backgroundExecutor: ThreadPoolExecutor? = null
+
+    /** A daemon single-thread executor over an unbounded queue; speculative work is depth-gated. */
+    private fun newCacheWorker(name: String): ThreadPoolExecutor =
+        ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { r ->
+            Thread(r, name).apply { isDaemon = true }
+        }
 
     /** Hook for overlay drawing (selection/live-stroke/eraser), set by the interaction layer. */
     var drawOverlay: ((renderer: AndroidRenderer, canvas: Canvas) -> Unit)? = null
@@ -365,16 +383,14 @@ class CanvasView @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (cacheExecutor?.isShutdown != false) {
-            cacheExecutor = Executors.newSingleThreadExecutor { r ->
-                Thread(r, "xnotes-cache").apply { isDaemon = true }
-            }
-        }
+        if (inkExecutor?.isShutdown != false) inkExecutor = newCacheWorker("xnotes-ink")
+        if (backgroundExecutor?.isShutdown != false) backgroundExecutor = newCacheWorker("xnotes-pdf")
         startDebugTick() // resume the HUD ticker if it was left enabled across a detach/reattach
     }
 
     override fun onDetachedFromWindow() {
-        cacheExecutor?.shutdown()
+        inkExecutor?.shutdown()
+        backgroundExecutor?.shutdown()
         mainHandler.removeCallbacks(debugTick)
         mainHandler.removeCallbacks(sharpDebounce)
         super.onDetachedFromWindow()
@@ -398,6 +414,10 @@ class CanvasView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         val st = state ?: return
+        // Adopt this frame's cache band before scheduling anything: a jump to a distant page is
+        // then in-band when its build starts, and pages the view left have their in-flight PDF
+        // renders cancelled at once. Pruning still happens in prefetchAndPrune() below.
+        st.updateCacheBand()
         canvas.drawColor(st.palette.bg.toArgb())
         // Room made and its page's caches rebuilt to hold it: the page draws as any other again.
         st.roomView?.let { v -> if (!v.live && st.roomSettled(v.page)) st.roomView = null }

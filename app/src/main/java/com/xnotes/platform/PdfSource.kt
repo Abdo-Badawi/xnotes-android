@@ -54,8 +54,15 @@ class PdfSource private constructor(
     /** Why the PDF did not open, null when it did. Waits for the open. */
     val openError: PdfOpenError? get() = pdf.error
 
-    /** The text of the pages last touched, for selecting and copying. */
-    val text = PageTextCache { pdf.pageText(it, PdfPriority.INTERACTIVE) }
+    /**
+     * The text of the pages last touched, for selecting and copying. A tap's read is [INTERACTIVE];
+     * the speculative prefetch under a moving pointer is [WARM], so it cannot hold up the page on
+     * screen.
+     */
+    val text = PageTextCache(
+        read = { pdf.pageText(it, PdfPriority.INTERACTIVE) },
+        prefetchRead = { pdf.pageText(it, PdfPriority.WARM) },
+    )
 
     /** Page [index]'s text to search, from the held text when there is one; null once closed. Waits, so not on the main thread. */
     fun searchText(index: Int): SearchText? {
@@ -103,22 +110,26 @@ class PdfSource private constructor(
     @Volatile private var closed = false
 
     /** Page size in points (1 pt = 1/72 inch) as displayed, its /Rotate and its key's turn applied; 0x0 for a broken page. */
-    fun pageSizePoints(index: Int): Pair<Float, Float>? {
+    fun pageSizePoints(
+        index: Int,
+        priority: PdfPriority = priority(),
+        token: CancelToken? = null,
+    ): Pair<Float, Float>? {
         pageSizes[index]?.let { return it }
-        if (closed) return null
-        val s = pdf.pageSizes(PdfKey.index(index), 1, priority())?.takeIf { it.size == 2 } ?: return null
+        if (closed || token?.isCancelled == true) return null
+        val s = pdf.pageSizes(PdfKey.index(index), 1, priority, token)?.takeIf { it.size == 2 } ?: return null
         val size = if (PdfKey.turn(index) % 2 == 1) s[1] to s[0] else s[0] to s[1]
         return size.also { pageSizes[index] = it }
     }
 
     /** Every page's size in points, width then height, for importing a whole PDF. Read in slices, so
      *  renders get their turn. */
-    fun allPageSizePoints(): FloatArray? {
+    fun allPageSizePoints(priority: PdfPriority = priority()): FloatArray? {
         val n = pageCount
         val out = FloatArray(2 * n)
         for (from in 0 until n step SIZES_PER_READ) {
             if (closed) return null
-            val part = pdf.pageSizes(from, SIZES_PER_READ, priority()) ?: return null
+            val part = pdf.pageSizes(from, SIZES_PER_READ, priority) ?: return null
             part.copyInto(out, 2 * from)
         }
         return out
@@ -131,10 +142,12 @@ class PdfSource private constructor(
         heightPx: Int,
         filter: PdfPageFilter = PdfPageFilter.NONE,
         markups: List<TextMarkup> = emptyList(),
+        priority: PdfPriority = priority(),
+        cancel: CancelToken? = null,
     ): AndroidRasterSurface? {
         val w = widthPx.coerceIn(1, MAX_DIM)
         val h = heightPx.coerceIn(1, MAX_DIM)
-        return render(index, w, h, 0, 0, w, h, filter, markups)
+        return render(index, w, h, 0, 0, w, h, filter, markups, priority, cancel)
     }
 
     /**
@@ -142,7 +155,9 @@ class PdfSource private constructor(
      * page [index] drawn at [pxPerPt] pixels per point, in pixels from the page's top-left corner,
      * into a [regionWpx] × [regionHpx] bitmap. The page is never allocated at full size; only the
      * region bitmap is, so a high-zoom viewport region can be rasterized at full resolution
-     * without a giant whole-page bitmap. [markups] are drawn on it.
+     * without a giant whole-page bitmap. [markups] are drawn on it. [priority] is the caller's
+     * explicit queue priority; [cancel] is the view request's token, which stops the read and the
+     * native render when the page is no longer wanted.
      */
     fun renderRegion(
         index: Int,
@@ -153,46 +168,71 @@ class PdfSource private constructor(
         regionHpx: Int,
         filter: PdfPageFilter = PdfPageFilter.NONE,
         markups: List<TextMarkup> = emptyList(),
+        priority: PdfPriority = priority(),
+        cancel: CancelToken? = null,
     ): AndroidRasterSurface? {
-        val (wPts, hPts) = pageSizePoints(index) ?: return null
+        if (closed || cancel?.isCancelled == true) return null
+        val (wPts, hPts) = pageSizePoints(index, priority, cancel) ?: return null
+        if (cancel?.isCancelled == true) return null
         val fullW = (wPts * pxPerPt).roundToInt()
         val fullH = (hPts * pxPerPt).roundToInt()
         if (fullW <= 0 || fullH <= 0) return null
         return render(
             index, fullW, fullH, regionLeftPx, regionTopPx,
-            regionWpx.coerceIn(1, MAX_DIM), regionHpx.coerceIn(1, MAX_DIM), filter, markups,
+            regionWpx.coerceIn(1, MAX_DIM), regionHpx.coerceIn(1, MAX_DIM), filter, markups, priority, cancel,
         )
     }
 
     /** Renders the [w] × [h] region at ([left], [top]) of a [fullW] × [fullH] raster of page [index]. */
     private fun render(
         index: Int, fullW: Int, fullH: Int, left: Int, top: Int, w: Int, h: Int, filter: PdfPageFilter,
-        markups: List<TextMarkup>,
+        markups: List<TextMarkup>, priority: PdfPriority, cancel: CancelToken?,
     ): AndroidRasterSurface? {
-        if (closed) return null
+        if (closed || cancel?.isCancelled == true) return null
         // Read before the render, which then finds the page already loaded.
-        val images = if (filter.stampImages) imageRectsFor(index) else null
+        val images = if (filter.stampImages) imageRectsFor(index, priority, cancel) else null
+        if (cancel?.isCancelled == true) return null
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        if (!pdf.render(index, bmp, fullW, fullH, left, top, priority())) {
+        if (!pdf.render(index, bmp, fullW, fullH, left, top, priority, cancel)) {
             bmp.recycle()
             return null
         }
-        if (markups.isNotEmpty()) paintMarkups(bmp, markups, index, fullW, fullH, left, top)
+        if (cancel?.isCancelled == true) {
+            bmp.recycle()
+            return null
+        }
+        if (markups.isNotEmpty()) paintMarkups(bmp, markups, index, fullW, fullH, left, top, priority, cancel)
+        if (cancel?.isCancelled == true) {
+            bmp.recycle()
+            return null
+        }
         val m = filter.pageMatrix ?: return AndroidRasterSurface(bmp)
 
         val filtered = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        if (cancel?.isCancelled == true) {
+            filtered.recycle()
+            bmp.recycle()
+            return null
+        }
         Canvas(filtered).drawBitmap(bmp, 0f, 0f, matrixPaint(m))
-        val size = pageSizePoints(index)
+        val size = pageSizePoints(index, priority, cancel)
         if (images != null && images.isNotEmpty() && size != null && size.first > 0f && size.second > 0f) {
             stampOriginalImages(filtered, bmp, images, fullW / size.first, fullH / size.second, left, top)
         }
         bmp.recycle()
+        if (cancel?.isCancelled == true) {
+            filtered.recycle()
+            return null
+        }
         return AndroidRasterSurface(filtered)
     }
 
     /** Draws [markups] onto [bmp], the ([left], [top]) corner of page [index] rendered [fullW] × [fullH]. */
-    private fun paintMarkups(bmp: Bitmap, markups: List<TextMarkup>, index: Int, fullW: Int, fullH: Int, left: Int, top: Int) {
-        val (wPts, hPts) = pageSizePoints(index) ?: return
+    private fun paintMarkups(
+        bmp: Bitmap, markups: List<TextMarkup>, index: Int, fullW: Int, fullH: Int, left: Int, top: Int,
+        priority: PdfPriority, cancel: CancelToken?,
+    ) {
+        val (wPts, hPts) = pageSizePoints(index, priority, cancel) ?: return
         if (wPts <= 0f || hPts <= 0f) return
         val r = AndroidRenderer(Canvas(bmp))
         r.translate(-left.toDouble(), -top.toDouble())
@@ -237,9 +277,9 @@ class PdfSource private constructor(
     }
 
     /** [index]'s image boxes, read once; empty when it has none or does not load. */
-    private fun imageRectsFor(index: Int): FloatArray {
+    private fun imageRectsFor(index: Int, priority: PdfPriority, cancel: CancelToken?): FloatArray {
         imageRects[index]?.let { return it }
-        val rects = pdf.imageRects(index, priority()) ?: return FloatArray(0)
+        val rects = pdf.imageRects(index, priority, cancel) ?: return FloatArray(0)
         return rects.also { imageRects[index] = it }
     }
 
@@ -288,7 +328,7 @@ class PdfSource private constructor(
                     while (!closed) {
                         val target = desiredLinkPage // latest wins; intermediate scroll targets are skipped
                         if (target < 0 || current?.index == target) break
-                        setCurrentLinks(target)
+                        setCurrentLinks(target, PdfPriority.WARM)
                     }
                 } finally {
                     linkPumpActive.set(false)
@@ -310,7 +350,7 @@ class PdfSource private constructor(
         runCatching {
             executor.execute {
                 if (closed) return@execute
-                runCatching { setCurrentLinks(index) }
+                runCatching { setCurrentLinks(index, PdfPriority.INTERACTIVE) }
                 if (!closed) onReady()
             }
         }
@@ -327,12 +367,13 @@ class PdfSource private constructor(
 
     /**
      * Parse [index]'s links and make them the current page's links, replacing (evicting) the previous
-     * page's — only one page is ever held, so link memory stays O(1). Interactive priority even when
-     * warming: the page is usually loaded already for its render, so a read takes well under 1 ms.
+     * page's — only one page is ever held, so link memory stays O(1). A committed tap parses at
+     * [PdfPriority.INTERACTIVE]; warming while scrolling is speculative, so it runs at
+     * [PdfPriority.WARM] and cannot hold up the page being drawn.
      */
-    private fun setCurrentLinks(index: Int): List<PdfLink> {
+    private fun setCurrentLinks(index: Int, priority: PdfPriority): List<PdfLink> {
         current?.let { if (it.index == index) return it.links }
-        val result = pdf.links(index, PdfPriority.INTERACTIVE).orEmpty()
+        val result = pdf.links(index, priority).orEmpty()
         current = PageLinks(index, result)
         return result
     }

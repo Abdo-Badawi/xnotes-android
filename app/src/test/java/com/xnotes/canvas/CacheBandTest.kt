@@ -27,7 +27,7 @@ class CacheBandTest {
             verticalScroll = vertical
             viewportW = vw
             viewportH = vh
-            paintPageBackground = { page, _, _, _ -> pdfRenders.merge(page, 1, Int::plus) }
+            paintPageBackground = { page, _, _, _, _, _ -> pdfRenders.merge(page, 1, Int::plus) }
             runAsync = { cacheThread.addLast(it) }
             relayout()
             establishInitialView()

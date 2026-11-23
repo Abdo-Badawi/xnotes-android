@@ -60,19 +60,23 @@ class PdfiumDocument private constructor(
 
     /**
      * Width and height in points of [count] pages from [from], as displayed (/Rotate applied),
-     * 0 for a page that does not load; null when not open. Every page by default.
+     * 0 for a page that does not load; null when not open. Every page by default. [token] is the
+     * caller's render request: cancelling it drops the queued read too, so a page the view has
+     * left does not keep the PDFium thread working on its size.
      */
     fun pageSizes(
         from: Int = 0, count: Int = Int.MAX_VALUE, priority: PdfPriority = PdfPriority.INTERACTIVE,
-    ): FloatArray? = withHandle(priority) { PdfiumNative.nativePageSizes(it, from, count) }
+        token: CancelToken? = null,
+    ): FloatArray? = withHandle(priority, token) { PdfiumNative.nativePageSizes(it, from, count) }
 
     /**
      * The boxes of the images on the page [key] names (see [PdfKey]), those inside form XObjects
      * included: left, top, right, bottom in points as displayed (top-left origin, /Rotate and the
-     * key's turn applied); null when not open.
+     * key's turn applied); null when not open. [token] cancels the queued read with the render it
+     * belongs to.
      */
-    fun imageRects(key: Int, priority: PdfPriority): FloatArray? =
-        withHandle(priority) { PdfiumNative.nativeImageRects(it, PdfKey.index(key), PdfKey.turn(key)) }
+    fun imageRects(key: Int, priority: PdfPriority, token: CancelToken? = null): FloatArray? =
+        withHandle(priority, token) { PdfiumNative.nativeImageRects(it, PdfKey.index(key), PdfKey.turn(key)) }
 
     /**
      * The link areas on the page [key] names, one per line of a link that spans several, with where

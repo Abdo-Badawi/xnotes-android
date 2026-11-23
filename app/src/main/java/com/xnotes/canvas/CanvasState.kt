@@ -21,6 +21,8 @@ import com.xnotes.core.pal.Renderer
 import com.xnotes.core.pal.SurfaceFactory
 import com.xnotes.core.stroke.StrokeGeometry
 import com.xnotes.core.tools.Tool
+import com.xnotes.platform.CancelToken
+import com.xnotes.platform.PdfPriority
 import com.xnotes.ui.theme.Palette
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -482,8 +484,14 @@ class CanvasState(
      * Optional page-background painter (PDF / template). [region] is the page-local content rect
      * to render — the whole page for the page cache/thumbnails, or just the visible sub-rect for
      * the sharp viewport — so the painter can rasterize only that slice at full resolution.
+     * [priority] is the queue priority the build was scheduled at, and [cancel] is its request token:
+     * the painter must pass both to the PDF layer (see `Editor.paintBackground`) so an obsolete page
+     * stops before or during its PDFium render. Both are null/default for a synchronous build.
      */
-    var paintPageBackground: ((page: Page, renderer: Renderer, res: Double, region: Rect) -> Unit)? = null
+    var paintPageBackground: ((
+        page: Page, renderer: Renderer, res: Double, region: Rect,
+        cancel: CancelToken?, priority: PdfPriority,
+    ) -> Unit)? = null
 
     /**
      * Optional flow-text painter (the document-wide typed text). It paints onto the
@@ -551,18 +559,47 @@ class CanvasState(
      * Off-UI-thread plumbing for the *non-blocking* cache path ([cacheForOrSchedule] /
      * [backgroundForOrSchedule]). The canvas calls those from `onDraw`; when a freshly
      * scrolled-in page has no current-resolution cache yet, the heavy rasterization runs
-     * on [runAsync] (a background thread) and the finished surface is published back on
+     * on a background thread and the finished surface is published back on
      * [postToMain], which then asks for a repaint via [onCacheReady]. This keeps the
      * scroll frame from stalling while a new page is rasterized — the page just appears a
      * frame or two later. The defaults run inline so unit tests stay synchronous.
+     *
+     * [runAsync] is for ink-only builds; [runAsyncBackground] for anything that may call the PDF
+     * layer and block on the shared PDFium thread. Production wires them to two different
+     * executors so a PDF render cannot hold up an ink-cache rebuild. When [runAsyncBackground] is
+     * null both go to [runAsync], which keeps the existing synchronous-test harnesses working.
      */
     var runAsync: (work: () -> Unit) -> Unit = { it() }
+    var runAsyncBackground: ((work: () -> Unit) -> Unit)? = null
     var postToMain: (work: () -> Unit) -> Unit = { it() }
     var onCacheReady: (() -> Unit)? = null
 
+    /** Approximate queued background (PDF) work, used to stop speculative prefetch piling up. */
+    var backgroundQueueDepth: () -> Int = { 0 }
+
+    /** Approximate queued ink-cache work, used to stop speculative prefetch piling up. */
+    var inkQueueDepth: () -> Int = { 0 }
+
+    private fun runInk(work: () -> Unit) = runAsync(work)
+
+    private fun runBackground(work: () -> Unit) = (runAsyncBackground ?: runAsync)(work)
+
+    /** A scheduled background build: its cancellation token and the page whose cache it fills. */
+    private class BackgroundRequest(val token: CancelToken)
+
     /** Pages with a build in flight, so we never queue the same page twice. */
-    private val pendingInk = HashSet<Page>()
-    private val pendingBg = HashSet<Page>()
+    private val pendingInk = HashMap<Page, Any>()
+    private val pendingBg = HashMap<Page, BackgroundRequest>()
+
+    /** Tokens of whole-background rebakes in flight, by page, so invalidation can stop them too. */
+    private val rebakeTokens = HashMap<Page, CancelToken>()
+
+    /**
+     * The pages the last frame's cache band kept. Written on the main thread and read by background
+     * builds to skip work whose page has already left the band. Null until the first band update,
+     * so a build scheduled before any draw is never skipped.
+     */
+    @Volatile private var bandKeep: Set<Page>? = null
 
     /** Where [repairRegion] repainted a page while its build was in flight, to paint again on what the build brings. */
     private val repairedMeanwhile = HashMap<Page, Rect>()
@@ -577,10 +614,11 @@ class CanvasState(
 
     /**
      * Bumped by every cache invalidation. An in-flight async build captures the value at
-     * schedule time and its result is discarded if the generation has since moved on, so
-     * an edit (or zoom) that lands mid-build never gets overwritten by the stale surface.
+     * schedule time and checks it both before doing the expensive work and before publishing, so
+     * an edit (or zoom) that lands mid-build never gets overwritten by the stale surface — and a
+     * build that is already obsolete when its turn comes does not run at all.
      */
-    private var cacheGen = 0
+    @Volatile private var cacheGen = 0
 
     // --- sharp viewport (past the resolution cap) ---
 
@@ -601,6 +639,18 @@ class CanvasState(
 
     private var sharpFrame: SharpFrame? = null
     private var pendingSharp = false
+
+    /** The view an in-flight sharp render was requested for, and its request token. */
+    private class SharpRequest(
+        val token: CancelToken,
+        val gen: Int,
+        val row: Int,
+        val sx: Double,
+        val sy: Double,
+        val z: Double,
+    )
+
+    private var sharpRequest: SharpRequest? = null
 
     /**
      * Edits landed while a sharp render was in flight (its item snapshot predates them):
@@ -665,6 +715,9 @@ class CanvasState(
 
     fun relayout() {
         sharpGen++ // page layout / viewport size changed: the sharp viewport must re-render
+        cancelSharpRender()
+        cancelBackgroundRenders()
+        bandKeep = null // re-derived at the start of the next frame
         val pages = document.pages
         if (pages.isEmpty()) {
             pageRects = emptyList()
@@ -1251,40 +1304,70 @@ class CanvasState(
      * surface when one exists, otherwise schedules the build on [runAsync] and returns the
      * stale-resolution surface to blit meanwhile (or null when the page has never been
      * cached, in which case the caller draws bare paper until the build lands).
+     *
+     * [prefetch] marks speculative work: it is skipped if the page has left the band by the time
+     * the build's turn comes, whereas a page the draw loop is showing is never skipped on band
+     * grounds (only a newer generation or cancellation can invalidate it).
      */
-    fun cacheForOrSchedule(page: Page): CacheEntry? {
+    fun cacheForOrSchedule(page: Page, prefetch: Boolean = false): CacheEntry? {
         val res = clampedRes(page)
         val existing = caches[page]
         if (existing != null && existing.usableFor(page, res)) return existing
-        scheduleInk(page, res)
+        scheduleInk(page, res, prefetch)
         // Sync scheduler filled it; async leaves the stale entry (or null). A stale *resolution* is
         // still blitted (scaled) so a pinch never flashes, but a stale *footprint* is not: stretching
         // a whole page while a margin slider is dragged reads far worse than bare paper does.
         return caches[page]?.takeIf { it.cover == footprint(page) }
     }
 
-    private fun scheduleInk(page: Page, res: Double) {
-        if (!pendingInk.add(page)) return
+    /** Whether [page] is in the last frame's cache band; true before the first band update. */
+    private fun inBand(page: Page): Boolean = bandKeep?.contains(page) ?: true
+
+    /**
+     * True when a scheduled build is still worth doing: the generation has not moved, the request
+     * has not been cancelled, and — for speculative work only — the page is still in the band.
+     * A visible page is checked against the band at publish time instead, because the draw loop
+     * schedules it before that frame's band has been published.
+     */
+    private fun isBuildCurrent(page: Page, gen: Int, prefetch: Boolean, token: CancelToken?): Boolean =
+        gen == cacheGen && (token == null || !token.isCancelled) && (!prefetch || inBand(page))
+
+    private fun scheduleInk(page: Page, res: Double, prefetch: Boolean) {
+        if (pendingInk.containsKey(page)) return
+        val request = Any()
+        pendingInk[page] = request
         val gen = cacheGen
         val items = cacheItems(page) // snapshot on the UI thread
         val withFlow = !flowLifted // snapshot too; the generation guard discards stale builds
-        runAsync {
-            val entry = renderInk(page, res, items, withFlow)
-            postToMain {
-                pendingInk.remove(page)
-                val meanwhile = repairedMeanwhile.remove(page)
-                if (gen == cacheGen) {
-                    caches[page] = entry
-                    staleInk.remove(page)
-                    // The build painted from what it read then; a repair since, as a playhead crossing ink, would be lost.
-                    meanwhile?.let { repaintCached(entry, page, it) }
+        val work = {
+            var entry: CacheEntry? = null
+            try {
+                if (isBuildCurrent(page, gen, prefetch, null)) entry = renderInk(page, res, items, withFlow)
+            } finally {
+                postToMain {
+                    val mine = pendingInk[page] === request
+                    if (mine) pendingInk.remove(page)
+                    val meanwhile = if (mine) repairedMeanwhile.remove(page) else null
+                    if (entry != null && mine && gen == cacheGen && inBand(page)) {
+                        caches[page] = entry
+                        staleInk.remove(page)
+                        // The build painted from what it read then; a repair since, as a playhead crossing ink, would be lost.
+                        meanwhile?.let { repaintCached(entry, page, it) }
+                    }
+                    // Repaint either way. A build the page outgrew mid-flight (a margin drag bumps the
+                    // generation on every tick) is discarded here, and the draw loop is what schedules
+                    // its replacement — but every frame while this one was in flight was turned away by
+                    // [pendingInk], so without this the page would sit blank until something else drew.
+                    onCacheReady?.invoke()
                 }
-                // Repaint either way. A build the page outgrew mid-flight (a margin drag bumps the
-                // generation on every tick) is discarded here, and the draw loop is what schedules
-                // its replacement — but every frame while this one was in flight was turned away by
-                // [pendingInk], so without this the page would sit blank until something else drew.
-                onCacheReady?.invoke()
             }
+        }
+        try {
+            runInk(work)
+        } catch (t: Throwable) {
+            // A rejected executor must not leave the page permanently marked pending.
+            if (pendingInk[page] === request) pendingInk.remove(page)
+            throw t
         }
     }
 
@@ -1419,43 +1502,83 @@ class CanvasState(
         val res = clampedRes(page)
         val existing = bgCaches[page]
         if (existing != null && existing.usableFor(page, res)) return existing
-        return buildBackground(page, res).also { it.seq = markupSeq; bgCaches[page] = it }
+        return buildBackground(page, res, PdfPriority.VISIBLE_RENDER, null)?.also {
+            it.seq = markupSeq
+            bgCaches[page] = it
+        }
     }
 
-    /** Non-blocking counterpart to [backgroundFor]; see [cacheForOrSchedule]. */
-    fun backgroundForOrSchedule(page: Page): CacheEntry? {
+    /**
+     * Non-blocking counterpart to [backgroundFor]; see [cacheForOrSchedule]. [priority] is the
+     * queue priority the PDF render will run at — [PdfPriority.WARM] for speculative prefetch,
+     * which also marks the build as band-bound; the visible page uses [PdfPriority.VISIBLE_RENDER].
+     */
+    fun backgroundForOrSchedule(
+        page: Page,
+        priority: PdfPriority = PdfPriority.VISIBLE_RENDER,
+        prefetch: Boolean = priority == PdfPriority.WARM,
+    ): CacheEntry? {
         if (!hasPageBackground(page)) return null
         val res = clampedRes(page)
         val existing = bgCaches[page]
         if (existing != null && existing.usableFor(page, res)) return existing
-        scheduleBg(page, res)
+        scheduleBg(page, res, priority, prefetch)
         return bgCaches[page]?.takeIf { it.cover == footprint(page) }
     }
 
-    private fun scheduleBg(page: Page, res: Double) {
-        if (!pendingBg.add(page)) return
+    private fun scheduleBg(page: Page, res: Double, priority: PdfPriority, prefetch: Boolean) {
+        if (pendingBg.containsKey(page)) return
+        val request = BackgroundRequest(CancelToken())
+        pendingBg[page] = request
         val gen = cacheGen
         val seq = markupSeq // the build reads the markups after this, so it holds every edit up to here
-        runAsync {
-            val entry = buildBackground(page, res)
-            postToMain {
-                pendingBg.remove(page)
-                if (gen == cacheGen) bgCaches[page] = entry.also { it.seq = seq }
-                onCacheReady?.invoke() // discarded or not; see [scheduleInk]
+        val work = {
+            var entry: CacheEntry? = null
+            try {
+                if (isBuildCurrent(page, gen, prefetch, request.token)) {
+                    entry = buildBackground(page, res, priority, request.token)
+                }
+            } finally {
+                postToMain {
+                    val mine = pendingBg[page] === request
+                    if (mine) pendingBg.remove(page)
+                    if (entry != null && mine && gen == cacheGen && inBand(page) && !request.token.isCancelled) {
+                        bgCaches[page] = entry.also { it.seq = seq }
+                    }
+                    onCacheReady?.invoke() // discarded or not; see [scheduleInk]
+                }
             }
+        }
+        try {
+            runBackground(work)
+        } catch (t: Throwable) {
+            if (pendingBg[page] === request) pendingBg.remove(page)
+            throw t
         }
     }
 
-    private fun buildBackground(page: Page, res: Double): CacheEntry {
+    private fun buildBackground(
+        page: Page, res: Double, priority: PdfPriority, token: CancelToken?,
+    ): CacheEntry? {
+        if (token?.isCancelled == true) return null
         val cover = footprint(page)
         val w = ceil(cover.w * res).toInt().coerceAtLeast(1)
         val h = ceil(cover.h * res).toInt().coerceAtLeast(1)
+        if (token?.isCancelled == true) return null
         val surface = surfaceFactory.create(w, h, 1.0)
+        if (token?.isCancelled == true) {
+            surface.recycle()
+            return null
+        }
         surface.fill(TRANSPARENT)
         val r = surface.renderer()
         r.scale(res, res)
         r.translate(-cover.left, -cover.top)
-        paintPageBackground?.invoke(page, r, res, cover)
+        paintPageBackground?.invoke(page, r, res, cover, token, priority)
+        if (token?.isCancelled == true) {
+            surface.recycle()
+            return null
+        }
         return CacheEntry(surface, res, cover)
     }
 
@@ -1499,15 +1622,41 @@ class CanvasState(
         }
         val res = clampedRes(page)
         val seq = markupSeq // the build reads the markups after this, so it holds every edit up to here
-        runAsync {
-            val fresh = buildBackground(page, res)
-            postToMain {
-                rebaking.remove(page)
-                val shown = bgCaches[page]
-                if (shown != null && shown.seq < seq) bgCaches[page] = fresh.also { it.seq = seq }
-                if (rebakeAgain.remove(page) && bgCaches[page] != null) scheduleRebake(page)
-                onCacheReady?.invoke()
+        val token = CancelToken()
+        rebakeTokens[page] = token
+        val work = {
+            var fresh: CacheEntry? = null
+            try {
+                // A rebake is background repair: like prefetch it is bound to the band, but unlike
+                // the page build it is not cancelled merely because a markup edit bumped the
+                // generation — the edit is what it is rebuilding for.
+                if (!token.isCancelled && inBand(page)) {
+                    fresh = buildBackground(page, res, PdfPriority.BG_REPAIR, token)
+                }
+            } finally {
+                postToMain {
+                    if (rebakeTokens[page] === token) rebakeTokens.remove(page)
+                    rebaking.remove(page)
+                    if (!token.isCancelled && fresh != null) {
+                        val shown = bgCaches[page]
+                        if (shown != null && shown.seq < seq &&
+                            fresh.cover == footprint(page) &&
+                            kotlin.math.abs(fresh.res - clampedRes(page)) < 1e-6
+                        ) {
+                            bgCaches[page] = fresh.also { it.seq = seq }
+                        }
+                    }
+                    if (rebakeAgain.remove(page) && bgCaches[page] != null && inBand(page)) scheduleRebake(page)
+                    onCacheReady?.invoke()
+                }
             }
+        }
+        try {
+            runBackground(work)
+        } catch (t: Throwable) {
+            if (rebakeTokens[page] === token) rebakeTokens.remove(page)
+            rebaking.remove(page)
+            throw t
         }
     }
 
@@ -1613,6 +1762,9 @@ class CanvasState(
         caches.remove(page)
         staleInk.remove(page)
         if (roomView?.page === page && roomView?.live == false) roomView = null
+        // The generation bump discards every in-flight build; stop them doing the work now.
+        cancelBackgroundRenders()
+        cancelSharpRender()
         cacheGen++
         sharpGen++
     }
@@ -1628,18 +1780,24 @@ class CanvasState(
      */
     fun invalidatePaper() {
         sharpGen++
+        cancelSharpRender()
     }
 
     fun invalidateBackground(page: Page) {
         bgCaches.remove(page)
+        pendingBg[page]?.token?.cancel()
+        rebakeTokens[page]?.cancel()
         cacheGen++
         sharpGen++
+        cancelSharpRender()
     }
 
     fun invalidateAllBackgrounds() {
         bgCaches.clear()
+        cancelBackgroundRenders()
         cacheGen++
         sharpGen++
+        cancelSharpRender()
     }
 
     /**
@@ -1650,8 +1808,10 @@ class CanvasState(
      * what schedules the rebuild (see [usableFor]).
      */
     fun invalidatePageGeometry() {
+        cancelBackgroundRenders()
         cacheGen++
         sharpGen++
+        cancelSharpRender()
     }
 
     fun invalidateAllCaches() {
@@ -1662,6 +1822,9 @@ class CanvasState(
         unbaked.clear()
         hlCaches.clear()
         wetInk.clear()
+        cancelBackgroundRenders()
+        cancelSharpRender()
+        bandKeep = null
         cacheGen++
         sharpGen++
     }
@@ -1717,7 +1880,7 @@ class CanvasState(
         for (page in pages) {
             if (page !in caches) continue
             staleInk.add(page)
-            scheduleInk(page, clampedRes(page))
+            scheduleInk(page, clampedRes(page), prefetch = false)
         }
     }
 
@@ -1735,7 +1898,7 @@ class CanvasState(
             if (pendingSharp) pendingSharpEdits.add(page to padded)
             if (page !in caches) continue
             staleInk.add(page)
-            scheduleInk(page, clampedRes(page))
+            scheduleInk(page, clampedRes(page), prefetch = false)
         }
     }
 
@@ -1775,6 +1938,43 @@ class CanvasState(
      */
     fun invalidateCachesForZoom() {
         cacheGen++
+        cancelBackgroundRenders()
+        cancelSharpRender()
+    }
+
+    /** Cancel every queued or running background/rebake PDF request. Main thread only. */
+    private fun cancelBackgroundRenders() {
+        for (request in pendingBg.values) request.token.cancel()
+        for (token in rebakeTokens.values) token.cancel()
+    }
+
+    /** Cancel the sharp viewport render in flight, if any; its cleanup still resets [pendingSharp]. */
+    private fun cancelSharpRender() {
+        sharpRequest?.token?.cancel()
+    }
+
+    /**
+     * Adopt [keep] as the current cache band. A page outside it may still have a queued build: its
+     * request is cancelled so the build skips before allocating or calling PDFium. A sharp render
+     * covers the visible viewport, so a band change (the view moved) cancels it too.
+     */
+    private fun applyBandKeep(keep: Set<Page>) {
+        val changed = bandKeep != keep
+        bandKeep = keep
+        if (!changed) return
+        for ((page, request) in pendingBg) if (page !in keep) request.token.cancel()
+        for ((page, token) in rebakeTokens) if (page !in keep) token.cancel()
+        cancelSharpRender()
+    }
+
+    /**
+     * Re-derive the cache band before the draw loop schedules any page. Called at the start of a
+     * frame so a jump to a distant page is in [bandKeep] when its build starts, and so pages the
+     * view has left have their in-flight PDF renders cancelled immediately. Pruning is still
+     * [prefetchAndPrune]'s job.
+     */
+    fun updateCacheBand() {
+        applyBandKeep(cacheBand().keep)
     }
 
     fun dropCachesExcept(visible: Set<Page>) {
@@ -1837,13 +2037,21 @@ class CanvasState(
         return CacheBand(prefetch, keep)
     }
 
-    /** Runs after the visible pages are scheduled, so they build first; a pinch moving the zoom keeps the band but prefetches nothing. */
+    /**
+     * Runs after the visible pages are scheduled, so they build first; a pinch moving the zoom
+     * keeps the band but prefetches nothing. Speculative work is queued at [PdfPriority.WARM] and
+     * is not started once the executors already have a screenful or so backed up, so a fast fling
+     * cannot pile up an unbounded amount of prefetch behind the page the user is looking at.
+     */
     fun prefetchAndPrune() {
         val band = cacheBand()
+        applyBandKeep(band.keep)
         if (!zoomingInProgress) {
+            val canPrefetchBackground = backgroundQueueDepth() < PREFETCH_BG_QUEUE_LIMIT
+            val canPrefetchInk = inkQueueDepth() < PREFETCH_INK_QUEUE_LIMIT
             for (page in band.prefetch) {
-                backgroundForOrSchedule(page)
-                cacheForOrSchedule(page)
+                if (canPrefetchBackground) backgroundForOrSchedule(page, PdfPriority.WARM)
+                if (canPrefetchInk) cacheForOrSchedule(page, prefetch = true)
                 prefetchMath?.invoke(page, zoom)
             }
         }
@@ -1915,6 +2123,7 @@ class CanvasState(
 
     /** Drop the sharp viewport surface (e.g. once the zoom falls back below the cap). */
     fun clearSharpViewport() {
+        cancelSharpRender()
         sharpFrame = null
     }
 
@@ -1926,7 +2135,7 @@ class CanvasState(
      * [sharpSurfaceForView]) and re-rendered when the user pans/zooms to a new area.
      */
     fun requestSharpViewport() {
-        if (pendingSharp || zoomingInProgress || pageFlipAnimating || (!verticalScroll && flipOffsetX != 0.0) ||
+        if (zoomingInProgress || pageFlipAnimating || (!verticalScroll && flipOffsetX != 0.0) ||
             viewportW <= 0 || viewportH <= 0) return
         if (!isPastResolutionCap()) return
         val gen = sharpGen
@@ -1934,6 +2143,18 @@ class CanvasState(
         val sx = scrollX
         val sy = scrollY
         val z = zoom
+        // A newer view supersedes the render in flight: stop it and let its cleanup start the
+        // request for where the view is now. Same for a markup edit, which sets [sharpAgain].
+        if (pendingSharp) {
+            val current = sharpRequest
+            if (current != null && (current.gen != gen || current.row != row ||
+                    current.sx != sx || current.sy != sy || current.z != z)
+            ) {
+                current.token.cancel()
+                sharpAgain = true
+            }
+            return
+        }
         val vw = viewportW
         val vh = viewportH
         val res = z * renderScale
@@ -1956,30 +2177,53 @@ class CanvasState(
             draws.add(SharpPageSnap(page, pr, cacheItems(page), displayRectToPage(page, displayRegion), i))
         }
         if (draws.isEmpty()) return
+        val request = SharpRequest(CancelToken(), gen, row, sx, sy, z)
+        sharpRequest = request
         pendingSharp = true
         pendingSharpEdits.clear()
         val seq = markupSeq
         val withFlow = !flowLifted // snapshot; a session toggle bumps sharpGen and discards this
-        runAsync {
-            val base = surfaceFactory.create(vw, vh, 1.0).also { it.fill(bg) }
-            val ink = surfaceFactory.create(vw, vh, 1.0).also { it.fill(TRANSPARENT) }
-            renderSharpFrame(base, ink, o, z, res, draws, withFlow)
-            postToMain {
-                pendingSharp = false
-                if (gen == sharpGen && row == currentRow && !pageFlipAnimating &&
-                    sx == scrollX && sy == scrollY && z == zoom
-                ) {
-                    sharpFrame = SharpFrame(base, ink, sx, sy, z, gen, row, seq)
-                    // Replay edits committed during the build; the item snapshot predates them.
-                    for ((p, rect) in pendingSharpEdits) repairSharpInk(p, rect)
-                    onCacheReady?.invoke()
+        val work = {
+            var base: RasterSurface? = null
+            var ink: RasterSurface? = null
+            try {
+                if (!request.token.isCancelled && gen == sharpGen) {
+                    base = surfaceFactory.create(vw, vh, 1.0).also { it.fill(bg) }
+                    ink = surfaceFactory.create(vw, vh, 1.0).also { it.fill(TRANSPARENT) }
+                    renderSharpFrame(base, ink, o, z, res, draws, withFlow, PdfPriority.SHARP, request.token)
                 }
-                pendingSharpEdits.clear()
-                if (sharpAgain) {
-                    sharpAgain = false
-                    requestSharpViewport()
+            } finally {
+                postToMain {
+                    val mine = sharpRequest === request
+                    if (mine) {
+                        sharpRequest = null
+                        pendingSharp = false
+                    }
+                    if (base != null && ink != null && mine && !request.token.isCancelled &&
+                        gen == sharpGen && row == currentRow && !pageFlipAnimating &&
+                        sx == scrollX && sy == scrollY && z == zoom
+                    ) {
+                        sharpFrame = SharpFrame(base, ink, sx, sy, z, gen, row, seq)
+                        // Replay edits committed during the build; the item snapshot predates them.
+                        for ((p, rect) in pendingSharpEdits) repairSharpInk(p, rect)
+                        onCacheReady?.invoke()
+                    }
+                    pendingSharpEdits.clear()
+                    if (sharpAgain) {
+                        sharpAgain = false
+                        requestSharpViewport()
+                    }
                 }
             }
+        }
+        try {
+            runBackground(work)
+        } catch (t: Throwable) {
+            if (sharpRequest === request) {
+                sharpRequest = null
+                pendingSharp = false
+            }
+            throw t
         }
     }
 
@@ -1992,6 +2236,8 @@ class CanvasState(
         res: Double,
         draws: List<SharpPageSnap>,
         withFlow: Boolean = !flowLifted,
+        priority: PdfPriority = PdfPriority.SHARP,
+        token: CancelToken? = null,
     ) {
         val rb = base.renderer()
         rb.translate(o.x, o.y)
@@ -2000,13 +2246,14 @@ class CanvasState(
         ri.translate(o.x, o.y)
         ri.scale(z, z)
         for (d in draws) {
+            if (token?.isCancelled == true) return
             rb.fillRect(d.pr, paperColor(d.page))
             rb.save()
             rb.clipRect(d.pr)
             rb.translate(d.pr.left, d.pr.top)
             applyPageTransform(rb, d.page)
             if (paintPageBackground != null && d.region.w > 0.0 && d.region.h > 0.0) {
-                paintPageBackground?.invoke(d.page, rb, res, d.region)
+                paintPageBackground?.invoke(d.page, rb, res, d.region, token, priority)
             }
             rb.restore()
             ri.save()
@@ -2166,6 +2413,14 @@ class CanvasState(
 
         /** Padding (content px) around a replayed or repaired dirty rect, for AA edges. */
         const val SHARP_EDIT_PAD = 2.0
+
+        /**
+         * Queued speculative work above which [prefetchAndPrune] stops adding more. Visible-page
+         * builds are never gated by these; the limits only keep a fast fling from stacking
+         * hundreds of prefetches the user will never see.
+         */
+        private const val PREFETCH_BG_QUEUE_LIMIT = 8
+        private const val PREFETCH_INK_QUEUE_LIMIT = 16
 
         /** Gap (viewport px) left above the page top so nothing hides behind the toolbar. */
         const val TOP_GAP = 16.0

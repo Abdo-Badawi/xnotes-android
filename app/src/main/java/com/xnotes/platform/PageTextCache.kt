@@ -10,10 +10,14 @@ import java.util.concurrent.atomic.AtomicInteger
  * The text of the PDF pages last touched, read off the main thread by [read] (a PDF page index to
  * its text, null when it can't be read). [prefetch] starts on the page under a pointer as it goes
  * down, the latest page winning, so a long press finds the text waiting; [request] is the read a
- * gesture that needs the text now waits on. Only [CAPACITY] pages are kept, so memory stays
- * bounded however long the session.
+ * gesture that needs the text now waits on. The speculative prefetch uses [prefetchRead] when one
+ * is given (at a lower PDFium priority), while a tap's read always uses [read]. Only [CAPACITY]
+ * pages are kept, so memory stays bounded however long the session.
  */
-class PageTextCache(private val read: (Int) -> PageText?) {
+class PageTextCache(
+    private val read: (Int) -> PageText?,
+    private val prefetchRead: ((Int) -> PageText?)? = null,
+) {
     /** Least recently used first; guarded by itself. */
     private val pages = LinkedHashMap<Int, PageText>(CAPACITY + 1, 0.75f, true)
 
@@ -62,7 +66,7 @@ class PageTextCache(private val read: (Int) -> PageText?) {
             while (!closed) {
                 val index = wanted.get()
                 if (index < 0) break
-                load(index)
+                load(index, prefetch = true)
                 wanted.compareAndSet(index, -1)
             }
         } finally {
@@ -72,9 +76,9 @@ class PageTextCache(private val read: (Int) -> PageText?) {
         }
     }
 
-    private fun load(index: Int): PageText? {
+    private fun load(index: Int, prefetch: Boolean = false): PageText? {
         peek(index)?.let { return it }
-        val text = read(index) ?: return null
+        val text = (if (prefetch) prefetchRead ?: read else read)(index) ?: return null
         synchronized(pages) {
             pages[index] = text
             if (pages.size > CAPACITY) pages.remove(pages.keys.first())

@@ -18,11 +18,11 @@ class PageTextCacheTest {
     private var gate: CountDownLatch? = null
     private var unreadable = emptySet<Int>()
 
-    private val cache = PageTextCache { index ->
+    private val cache = PageTextCache(read = { index ->
         reads += index
         gate?.await(5, TimeUnit.SECONDS)
         if (index in unreadable) null else PageText(IntArray(1) { index }, FloatArray(4), ByteArray(1), null)
-    }
+    })
 
     @After
     fun close() = cache.close()
@@ -78,6 +78,30 @@ class PageTextCacheTest {
         cache.prefetch(5)
         Thread.sleep(50)
         assertEquals(listOf(5), reads.toList())
+    }
+
+    @Test
+    fun prefetchUsesTheLowerPriorityReaderWhileATapUsesTheInteractiveOne() {
+        val interactive = Collections.synchronizedList(ArrayList<Int>())
+        val speculative = Collections.synchronizedList(ArrayList<Int>())
+        val text = PageText(IntArray(1) { 7 }, FloatArray(4), ByteArray(1), null)
+        val lower = PageTextCache(
+            read = { interactive += it; text },
+            prefetchRead = { speculative += it; text },
+        )
+        try {
+            lower.prefetch(3)
+            eventually { lower.peek(3) != null }
+            assertEquals(listOf(3), speculative.toList())
+            assertTrue(interactive.isEmpty())
+
+            val got = CountDownLatch(1)
+            lower.request(4) { got.countDown() }
+            assertTrue(got.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(4), interactive.toList())
+        } finally {
+            lower.close()
+        }
     }
 
     @Test

@@ -2035,10 +2035,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                     (content.bottom - pr.top).coerceAtMost(cover.h) + cover.top,
                 )
                 if (local.w > 0.0 && local.h > 0.0) {
-                    // The user is waiting on this capture, so it skips ahead of other PDF renders.
-                    com.xnotes.platform.PdfSource.withPriority(com.xnotes.platform.PdfPriority.INTERACTIVE) {
-                        state.paintPageBackground?.invoke(page, r, res, local)
-                    }
+                    // The user is waiting on this capture, so it runs at INTERACTIVE priority. The
+                    // capture is a one-shot main-thread read (a Phase 3 follow-up removes the block).
+                    state.paintPageBackground?.invoke(
+                        page, r, res, local, null, com.xnotes.platform.PdfPriority.INTERACTIVE,
+                    )
                 }
                 val showFlow = only == null && local.w > 0.0 && local.h > 0.0
                 val items = itemsSnapshot(page).forExport().let { all -> if (only == null) all else all.filter { it in only } }
@@ -2141,7 +2142,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      * Text markups go into the PDF raster, under its colour filter; a page without a PDF draws them last.
      */
     private fun installPageBackground() {
-        state.paintPageBackground = { page, renderer, res, region -> paintBackground(page, renderer, res, region) }
+        state.paintPageBackground = { page, renderer, res, region, cancel, priority ->
+            paintBackground(page, renderer, res, region, cancel = cancel, priority = priority)
+        }
         state.paintRoomPaper = { view, renderer -> paintRoomPaper(view, renderer) }
     }
 
@@ -2172,7 +2175,16 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     /** The open note's page background over [region] at [res]; [minLine] is the template's thinnest line in content px. */
-    private fun paintBackground(page: Page, renderer: Renderer, res: Double, region: Rect, minLine: Double = 0.0) {
+    private fun paintBackground(
+        page: Page,
+        renderer: Renderer,
+        res: Double,
+        region: Rect,
+        minLine: Double = 0.0,
+        cancel: com.xnotes.platform.CancelToken? = null,
+        priority: com.xnotes.platform.PdfPriority = com.xnotes.platform.PdfPriority.VISIBLE_RENDER,
+    ) {
+        if (cancel?.isCancelled == true) return
         val src = pdfSource
         val pi = page.pdfKey
         val markups = page.markups
@@ -2185,6 +2197,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             val need = if (banded) com.xnotes.core.model.Rooms.sourceOf(region, page.rooms, sw, sh) else region
             val slice = need?.let { clampToContent(it, sw, sh) }
             if (slice != null) {
+                if (cancel?.isCancelled == true) return
                 val rx = (slice.left * res).toInt()
                 val ry = (slice.top * res).toInt()
                 val rw = kotlin.math.ceil(slice.w * res).toInt()
@@ -2192,7 +2205,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 // A point is dpi/72 content px, not a fit to the paper: older imports stored whole
                 // points, so their PDF runs past the paper by under a point, cropped as before.
                 val pxPerPt = res * state.document.dpi / 72.0
-                src.renderRegion(pi, pxPerPt, rx, ry, rw, rh, pdfPageFilter(), markups)?.let { bg ->
+                src.renderRegion(
+                    pi, pxPerPt, rx, ry, rw, rh, pdfPageFilter(), markups,
+                    priority = priority, cancel = cancel,
+                )?.let { bg ->
                     if (banded) {
                         com.xnotes.core.model.Rooms.drawBanded(renderer, bg, Rect(rx / res, ry / res, rw / res, rh / res), page.rooms, sw, sh)
                     } else {
@@ -2202,6 +2218,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 }
             }
         }
+        if (cancel?.isCancelled == true) return
         // A template covers a blank note page whole; on an imported PDF page it rules the
         // margins only, so the page itself is never drawn over.
         TemplateLibrary.paint(renderer, state.document, page, state.footprint(page), region, minLine)
@@ -3644,10 +3661,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         r.scale(scale, scale)
         r.translate(-cover.left, -cover.top)
         if (!active()) return null
-        // Paints the PDF page too, not just the ruling.
-        com.xnotes.platform.PdfSource.withPriority(com.xnotes.platform.PdfPriority.THUMBNAIL) {
-            paintBackground(page, r, scale, cover, lineFloor / scale)
-        }
+        // Paints the PDF page too, not just the ruling, explicitly at thumbnail priority.
+        paintBackground(
+            page, r, scale, cover, lineFloor / scale,
+            cancel = null, priority = com.xnotes.platform.PdfPriority.THUMBNAIL,
+        )
         val items = itemsSnapshot(page).let { if (forExport) it.forExport() else it }
         val under = PageLayers.underText(items)
         for (i in 0 until under) items[i].paint(r)
@@ -3957,9 +3975,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                         val sh = page.sourceHeight
                         val pw = (sw * scale).toInt().coerceAtLeast(1)
                         val ph = (sh * scale).toInt().coerceAtLeast(1)
-                        com.xnotes.platform.PdfSource.withPriority(com.xnotes.platform.PdfPriority.THUMBNAIL) {
-                            src.renderPage(pi, pw, ph, filter, page.markups)
-                        }?.let { bg ->
+                        src.renderPage(
+                            pi, pw, ph, filter, page.markups,
+                            priority = com.xnotes.platform.PdfPriority.THUMBNAIL,
+                        )?.let { bg ->
                             com.xnotes.core.model.Rooms.drawBanded(r, bg, Rect(0.0, 0.0, sw, sh), page.rooms, sw, sh)
                             bg.recycle()
                         }

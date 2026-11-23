@@ -33,7 +33,7 @@ class SelectionCacheRepairTest {
             viewportW = 800
             viewportH = 1000
             relayout()
-            if (background) paintPageBackground = { _, _, _, _ -> } // a non-null background painter (stands in for a PDF)
+            if (background) paintPageBackground = { _, _, _, _, _, _ -> } // a non-null background painter (stands in for a PDF)
         }
     }
 
