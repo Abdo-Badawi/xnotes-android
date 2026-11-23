@@ -27,6 +27,18 @@ class StrokeTessellatorTest {
     private fun line(n: Int, dx: Double = 4.0): StrokeGeometry =
         geometryOf(*Array(n) { (it * dx) to 0.0 })
 
+    /** A geometry with explicit centreline and half-widths, bypassing the engine's smoothing. */
+    private fun manual(vararg p: Triple<Double, Double, Double>): StrokeGeometry {
+        val xs = FloatArray(2 * p.size)
+        val hw = FloatArray(p.size)
+        for (i in p.indices) {
+            xs[2 * i] = p[i].first.toFloat()
+            xs[2 * i + 1] = p[i].second.toFloat()
+            hw[i] = p[i].third.toFloat()
+        }
+        return StrokeGeometry(xs, hw)
+    }
+
     /** Every point of the mesh, as (x, y) pairs. */
     private fun points(m: MeshData): List<Pair<Double, Double>> =
         (0 until m.vertexCount).map { m.positions[2 * it] to m.positions[2 * it + 1] }
@@ -405,5 +417,85 @@ class StrokeTessellatorTest {
         assertTrue(a.positions.contentEquals(b.positions))
         assertTrue(a.offsets.contentEquals(b.offsets))
         assertTrue(a.indices.contentEquals(b.indices))
+    }
+
+    // --- capsule swallowing and incremental runs (Phase 2 gaps) ---
+
+    /** When one disc contains the other, the hull is the larger disc; the smaller must not punch a hole. */
+    @Test fun aSwallowedCapsuleIsDrawnAsTheLargerDisc() {
+        val g = manual(
+            Triple(0.0, 0.0, 2.0),
+            Triple(5.0, 0.0, 10.0),
+            Triple(10.0, 0.0, 2.0),
+        )
+        val m = StrokeTessellator.tessellate(g)
+        assertTrue(covers(m, 5.0, 0.0))
+        assertTrue("larger disc's rim is missing", covers(m, 5.0, 9.5))
+        assertTrue("larger disc's far rim is missing", covers(m, 14.5, 0.0))
+        assertTrue("endpoints inside the larger disc are missing", covers(m, 0.0, 0.0) && covers(m, 10.0, 0.0))
+        assertTrue(!covers(m, 20.0, 0.0))
+    }
+
+    /** An incremental run must cover its own span, keep its rounded ends, and stay in the full bounds. */
+    @Test fun aRunCoversItsOwnSpanAndStaysInBounds() {
+        val g = line(10, dx = 4.0)
+        val full = StrokeTessellator.tessellate(g)
+        val run = StrokeTessellator.tessellate(g, from = 3, count = 4, tolerance = StrokeTessellator.DEFAULT_TOLERANCE)
+        for (i in 3..6) {
+            assertTrue("run hole at sample $i", covers(run, g.cx(i), g.cy(i)))
+            if (i < 6) {
+                val x = (g.cx(i) + g.cx(i + 1)) / 2.0
+                val y = (g.cy(i) + g.cy(i + 1)) / 2.0
+                assertTrue("run hole between $i and ${i + 1}", covers(run, x, y))
+            }
+        }
+        val rb = meshBounds(run)
+        val fb = meshBounds(full)
+        assertTrue(rb.left >= fb.left - 1e-6)
+        assertTrue(rb.top >= fb.top - 1e-6)
+        assertTrue(rb.right <= fb.right + 1e-6)
+        assertTrue(rb.bottom <= fb.bottom + 1e-6)
+        // The run's own end cap is round, not flat.
+        assertTrue(covers(run, g.cx(3) - g.hw(3) * 0.7, g.cy(3)))
+        assertTrue(covers(run, g.cx(6) + g.hw(6) * 0.7, g.cy(6)))
+    }
+
+    /** Consecutive runs overlap by a point; their union must cover the seam with no gap. */
+    @Test fun overlappingRunsLeaveNoGap() {
+        val g = line(9, dx = 4.0)
+        val a = StrokeTessellator.tessellate(g, from = 0, count = 5, tolerance = StrokeTessellator.DEFAULT_TOLERANCE)
+        val b = StrokeTessellator.tessellate(g, from = 4, count = 5, tolerance = StrokeTessellator.DEFAULT_TOLERANCE)
+        for (i in 0 until g.pointCount) {
+            val x = g.cx(i)
+            val y = g.cy(i)
+            assertTrue("gap at sample $i", covers(a, x, y) || covers(b, x, y))
+            if (i < g.pointCount - 1) {
+                val mx = (x + g.cx(i + 1)) / 2.0
+                val my = (y + g.cy(i + 1)) / 2.0
+                assertTrue("gap between $i and ${i + 1}", covers(a, mx, my) || covers(b, mx, my))
+            }
+        }
+    }
+
+    /** Width growth/shrink around a sharp turn must not open the centreline or a rim notch. */
+    @Test fun aWidthReversalAtATurnStaysCovered() {
+        val g = manual(
+            Triple(0.0, 0.0, 1.0),
+            Triple(20.0, 0.0, 4.0),
+            Triple(20.0, 20.0, 1.0),
+            Triple(0.0, 20.0, 4.0),
+        )
+        val m = StrokeTessellator.tessellate(g)
+        for (i in 0 until g.pointCount) {
+            assertTrue("hole at sample $i", covers(m, g.cx(i), g.cy(i)))
+        }
+        for (i in 0 until g.pointCount - 1) {
+            for (t in 1..9) {
+                val f = t / 10.0
+                val x = g.cx(i) + (g.cx(i + 1) - g.cx(i)) * f
+                val y = g.cy(i) + (g.cy(i + 1) - g.cy(i)) * f
+                assertTrue("hole between samples $i and ${i + 1}", covers(m, x, y))
+            }
+        }
     }
 }
