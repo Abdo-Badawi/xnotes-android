@@ -817,3 +817,44 @@ begin the implementation tranche until this report is reviewed.
 | Resolution math | `CanvasState.kt:1229-1236`, `Editor.kt:2194`, `CanvasState.kt:1928-2020` |
 | Existing caches/tests | `CacheBandTest.kt`, `SharpViewportEditReplayTest.kt`, `PageTextCacheTest.kt` |
 | No instrumented tests / benchmark module | `app/build.gradle.kts:132-139`; no `app/src/androidTest` |
+
+
+---
+
+## N. Post-implementation status — Medium-priority tranche
+
+This table is the current status after the Phase 3 high-priority commits (`79238d10`, `a4eda44c`,
+`6b54d40f`, `ad017c93`) and the Medium-priority tranche documented in
+`docs/PHASE_3_HIGH_PRIORITY_FIXES.md` section N. Nothing here is a hardware measurement.
+
+| Finding | Status | Notes |
+|---|---|---|
+| **C1** Display renders never cancelled | **Resolved** | Per-request `CancelToken` reaches the PDFium pause hook; cancelled results do not publish. |
+| **C2** Queued background builds cannot be skipped | **Resolved** | Generation/token/band checked before allocation and PDFium; identity-checked pending cleanup. |
+| **C3** Flat/dead priorities | **Resolved** | `INTERACTIVE > SHARP > VISIBLE_RENDER > BG_REPAIR > THUMBNAIL > SEARCH > WARM`, propagated explicitly. |
+| **C4** One executor for PDF + ink | **Resolved** | Separate `xnotes-ink` and `xnotes-pdf` workers; PDFium remains single-threaded. |
+| **C5 / M1** Main-thread capture renders | **Deferred** | Still synchronous on screenshot/selection copy/share. A safe async change needs snapshot/identity guards, an async share contract and instrumentation; not implemented speculatively. |
+| **C6 / M2** No input-aware deferral | **Resolved in code; hardware validation outstanding** | Pointer down suspends speculative prefetch and cancels in-flight `WARM`; a visible page promotes its WARM request. No timer. Input-latency effect unmeasured. |
+| **C7 / M3** Memory pressure ignores page caches | **Partially resolved** | `trimMemoryCaches()` drops off-screen ink/background/highlighter caches and the sharp frame on trim, keeping visible pages; no surface is recycled. |
+| **C8 / M3** No byte budget / adaptive sizing | **Deferred** | Only reliably measurable raster bytes exist; native/RenderThread/GC memory is not precisely accountable and no device baseline justifies a limit. |
+| **C9** `kPageCache = 4` | **Not applicable (by design)** | It bounds parsed `FPDF_PAGE` handles, not rendered bitmaps. Unchanged. |
+| **C10 / M4** Empty ink surface per page | **Resolved in code; runtime saving unmeasured** | Ink-free pages share one 1×1 sentinel; flow-content predicate preserves pages that actually paint text. |
+| **C11** Filtered render double allocation | **Deferred** | Still present (`PdfSource.render` raw + filtered bitmaps). Outside the M1–M4 subset; needs pixel-equality and transient-memory validation. |
+| **C12** Eviction relies on GC | **Partially addressed** | Pressure eviction drops off-screen references sooner; intentionally still no cache `recycle()`. |
+| **C13** No telemetry/benchmarks/androidTest | **Deferred** | No instrumentation or Macrobenchmark module exists in this checkout. |
+| **D1–D8** Potential issues | **Unchanged** | No hardware evidence was produced; sharp/pan quality and split-pane throughput remain unmeasured. |
+| **Stage 0 instrumentation** | **Not implemented** | Still the prerequisite for any numeric performance claim. |
+| **Stage 4 allocation/copy work** | **Partially implemented (M4 only)** | Empty ink surfaces done; filtered double allocation and pooling not done. |
+| **Stage 5 progressive first paint / Stage 6 tiles** | **Not started** | No evidence justifies them. |
+| **Stage 7 capture off main thread** | **Deferred** | Same as C5/M1. |
+| **Stage 8 `kPageCache`** | **Not started / measurement-only** | Unchanged. |
+
+### What still requires physical-device testing
+
+- Real stylus/finger input latency with background PDF rendering, including the M2 deferral and WARM
+  promotion policy.
+- `onTrimMemory` behavior and peak PSS/native/graphics after M3 pressure eviction.
+- Actual memory saved by M4 on unannotated PDFs (JVM tests prove allocation shape, not PSS).
+- Capture/sharing responsiveness until M1 is refactored, and the refactor itself.
+- Fling-phase scheduling (deferral ends at pointer-up; visible priority and promotion are the only
+  mechanisms during inertia).

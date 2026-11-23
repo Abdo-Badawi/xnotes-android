@@ -752,3 +752,204 @@ hook-arity tests and the Phase 3 audit report. The review-fix commit adds the ge
 unpublished-surface fixes. The SharpFrame audit commit adds the published-frame ownership policy and
 its tests. This report is updated in a follow-up documentation commit.
 `writing&performance_edits.txt` (untracked phase plan) was not staged or committed.
+
+
+---
+
+## N. Medium-Priority Improvements
+
+**Scope:** the Medium-priority subset requested for this tranche: M1 main-thread capture rendering,
+M2 input-aware scheduling, M3 page-cache memory policy, and M4 empty ink surfaces. No final-quality,
+`renderScale`, `maxCachePx`, transform, stroke-geometry or input-classification code was changed.
+No hardware benchmark is claimed.
+
+### N.1 Findings audit against the current code
+
+| Finding | Current status | Evidence (pre-change) | Action | Risk |
+|---|---|---|---|---|
+| **M1 / C5** Capture renders run synchronously on the UI thread | Still present | `Editor.kt:1911-1928`, `:1976-2050` (`renderRegionBitmap` → `paintPageBackground` → PDFium); `CanvasMenus.kt:584,601`; selection share at `CanvasMenus.kt:316,321` | **Deferred.** A safe move needs a snapshot/identity protocol and an async share API; no instrumentation exists to prove clipboard/share lifecycle and document-swap consistency. | Blocking UI for a 2× full-region render remains on screenshot/copy/share. |
+| **M2 / C6** No input-aware PDF deferral | Resolved in code | `CanvasState` had no pointer state; `prefetchAndPrune` always queued WARM work; a pending WARM build could not be promoted | Suspend speculative prefetch while a pointer is down, cancel in-flight `WARM`, and let a now-visible page supersede its WARM request. | Device input-latency effect is unmeasured; cancellation is page-level. |
+| **C7 / M3** Memory pressure does not cover page caches | Partially resolved | `EditorActivity.onTrimMemory` only called `PdfiumDocument.trimAll()`/`ImageDecoder.trim()` | On trim, drop off-screen ink/background/highlighter caches and sharp frame; keep visible pages; cancel off-screen requests. | Next normal frame can repopulate the band; visible-page protection depends on layout/visible range. |
+| **C8 / M3** No byte budget / device-adaptive sizing | Deferred | Only the band and per-bitmap `maxCachePx` cap; no LRU/timestamps or reliable total-memory model | Not implemented. A byte budget would be approximate and could cause re-render thrash; no baseline justifies a limit. | Peak memory on 2 GB devices remains unmeasured. |
+| **C10 / M4** Full-size ink surface for pages with no ink | Resolved in code | `renderInk` allocated `ceil(footprint × res)` unconditionally | Ink-free pages now hold one shared 1×1 sentinel; flow-highlighter-only pages too. | Runtime allocation/PSS saving is **UNMEASURED**. |
+| **C11** Filtered PDF renders allocate a second full bitmap | Still present | `PdfSource.render` raw + filtered bitmaps | Deferred; not in the M1–M4 subset. Pixel-equality/transient-PSS instrumentation is needed before changing it. | Extra transient peak on filtered pages. |
+| **C12** Eviction relies on GC | Partially addressed | Caches intentionally not recycled | Pressure eviction now drops off-screen references sooner, still without recycling. | Reclamation timing remains GC-owned. |
+| **C13** No rendering telemetry/benchmarks/androidTest | Still present | No `app/src/androidTest`, no benchmark module | Deferred. | Hardware claims remain impossible. |
+| **C9** `kPageCache = 4` | Not applicable / unchanged | Parsed-page LRU, not bitmap cache | No change, as the audit recommended. | None added. |
+
+### N.2 M2 — Input-aware rendering deferral
+
+**Implemented behaviour**
+
+- `CanvasState.inputActive` is a main-thread-owned, `@Volatile` flag set by `CanvasView.onTouchEvent`
+  on `ACTION_DOWN` and cleared on `ACTION_UP`/`ACTION_CANCEL`; `onDetachedFromWindow` also clears it.
+- `CanvasState.beginInput()` sets the flag and cancels every pending background request whose
+  `BackgroundRequest.priority == PdfPriority.WARM`. Queued work leaves the PDFium queue through the
+  existing cancellation hook; a running native render stops at PDFium’s next `NeedToPauseNow` check.
+- `prefetchAndPrune()` does not schedule speculative background, ink or math work while
+  `inputActive` is true. Visible-page, sharp and interactive work is untouched.
+- `BackgroundRequest` now records its priority. If a page with a pending `WARM` request becomes
+  visible, `scheduleBg` cancels that request and queues the `VISIBLE_RENDER` build instead of
+  keeping the speculative task ahead of the page on screen.
+- No timer, delay or arbitrary heuristic was added: the signal is the touch stream, and the next
+  frame after release resumes prefetch.
+
+**What this does and does not claim**
+
+- It prevents speculative PDF work from running while a hand is on the canvas, and prevents a
+  queued speculative build from occupying the single PDFium thread when the same page becomes
+  visible.
+- Fling after finger-up is not a “pointer down” state. It relies on the existing priority order
+  (`VISIBLE_RENDER > WARM`) and the promotion rule, not on a timer-based “settled” heuristic.
+- Input classification, provisional ink, cross-page strokes and stroke geometry were not touched.
+- Actual input-to-ink latency on the target hardware is **UNMEASURED**.
+
+**Tests added** (`PdfRenderSchedulingTest`, now 22 tests):
+
+- `inputStartCancelsSpeculativePrefetchButLeavesVisibleWorkAlone`
+- `prefetchIsSuspendedWhileAPointerIsDownAndResumesAfterItLifts`
+- `aPageThatBecomesVisiblePromotesItsPendingWarmBuild`
+- `inputDoesNotCancelAMarkupRepair`
+
+### N.3 M3 — Page-cache memory policy
+
+**What is measurable**
+
+- `CanvasState.cacheSnapshot().bytes` measures the ARGB bytes of owned page-cache,
+  background-cache and highlighter surfaces by `width × height × 4`. Empty ink sentinels are now
+  excluded (they hold no page pixels).
+- `CacheSnapshot` exposes page counts, not pending-build or sharp-frame bytes. Sharp-frame bytes are
+  known while constructing a frame (`vw × vh × 4 × 2`) but are not part of the snapshot.
+- PDFium’s parsed-page LRU and glyph/font caches are native-owned and not measurable from Kotlin.
+- Bitmaps already handed to a hardware `Canvas`/RenderThread, and surfaces awaiting GC, have no
+  reliable “still referenced” signal. Any byte budget would therefore be approximate, not precise.
+
+**Implemented pressure response (C7)**
+
+`CanvasState.trimMemoryCaches()`:
+
+1. Keeps only the pages currently intersecting the viewport.
+2. Shrinks `bandKeep` to that set so late results cannot republish dropped pages.
+3. Drops off-screen ink/background caches, stale-ink marks, highlighter ribbons and ribbon geometry.
+4. Cancels off-screen whole-layer/rebake requests (ink builds have no cancellation token; the band
+   shrink makes their publish check reject them).
+5. Drops and cancels the sharp viewport. A drawn frame is still not recycled; it is left to GC.
+
+`EditorActivity.onTrimMemory` calls it for `UI_HIDDEN`, `RUNNING_LOW` and `RUNNING_CRITICAL`, for
+both split panes. No surface is recycled, so the SharpFrame ownership rules are preserved.
+
+**Why no byte-based budget was added (C8)**
+
+A numeric limit cannot be chosen responsibly without peak-PSS/GC data on the target devices, and
+the only reliably measurable part is the raster layer set. Evicting by an arbitrary budget could
+increase re-renders and jank. The existing band remains the eviction policy; this tranche adds the
+missing pressure escape hatch instead of pretending to account for native/RenderThread/GC memory.
+
+**Tests added** (`MemoryPressureCacheTest`, 4 tests):
+
+- `trimKeepsTheVisiblePageAndDropsOffScreenLayers`
+- `trimCancelsQueuedWorkForPagesThatLeaveTheVisibleSet`
+- `trimDropsAnUndrawnSharpFrameWithoutRecyclingDrawnOnes`
+- `trimDoesNotRecyclePageCacheSurfaces`
+
+### N.4 M4 — Empty ink-surface allocation
+
+**Root cause (confirmed in current code)**
+
+`renderInk` always allocated `ceil(footprint.w × res) × ceil(footprint.h × res)` transparent ARGB,
+even when `cacheItems(page)` was empty and no flow text painted the page. On an unannotated imported
+PDF, every cached page therefore carried a page-sized transparent surface beside its PDF background.
+
+**Implementation**
+
+- `CacheEntry` has an `empty` flag. One shared 1×1 transparent `RasterSurface` is allocated lazily
+  per `CanvasState` and used by every ink-free page, so the cache map still has an entry for the
+  page (existing callers and band bookkeeping are unchanged) but no page-sized pixels.
+- `renderInk` returns the sentinel when both item lists are empty and no flow content will paint.
+- `CanvasState.hasFlowContent` lets the Editor report whether the published flow actually paints the
+  page (lines, tables, page-break marks or callouts). With no predicate installed, the code assumes
+  an installed `paintFlow` may paint, preserving older hosts/tests.
+- An empty `CacheEntry` is considered usable across resolution changes (there are no pixels to
+  re-rasterise).
+- `appendToCache` invalidates an empty entry before painting, and `repairRegion` returns false for
+  it, so the shared sentinel can never receive a stroke or an erase repair.
+- `CanvasView` skips blitting empty entries (main, neighbour and room paths).
+- `cacheSnapshot().bytes` excludes empty entries.
+
+**Preserved**
+
+Phase 1 input paths and Phase 2 stroke geometry/eraser/undo paths are untouched. Highlighters are
+still composited live and are never baked into the ink cache; a page containing only highlighters now
+uses the sentinel while its highlighter ribbons keep their own cache. Flow text, PDF background,
+markups and sharp-viewport replay are unchanged in content and resolution.
+
+**Tests added** (`EmptyInkSurfaceTest`, 7 tests):
+
+- `anInkFreePageCachesTheTinySentinelAndNoBytes`
+- `everyInkFreePageSharesOneSentinelAllocation`
+- `anEmptyCacheIsReusedAcrossAZoomInsteadOfRebuilt`
+- `drawingOnAnEmptyCacheRebuildsAtFullSize`
+- `repairingAnEmptyCacheNeverPaintsIntoTheSentinel`
+- `aPageWithFlowContentStillGetsAFullInkSurface`
+- `aPageWithOnlyAHighlighterUsesTheSentinel`
+
+### N.5 M1 — Main-thread capture rendering (deferred)
+
+The four capture paths are still synchronous:
+
+- `Editor.copyScreenshotAsImage()` / `screenshotImageForShare()` (`Editor.kt:1911-1928`).
+- `Editor.copySelectionAsImage()` / `selectionImageForShare()` (`Editor.kt:1976-1986`).
+- Both reach `renderRegionBitmap` (`Editor.kt:2007-2050`), which calls
+  `state.paintPageBackground(..., PdfPriority.INTERACTIVE)` and therefore a PDFium region render on
+  the calling UI thread.
+
+A correct asynchronous refactor must snapshot the page/rect/item/palette inputs on the main thread,
+pin or identity-guard the open `PdfSource`, capture a `CancelToken`, and post a result only if the
+document and source are still the same. The share paths also return a `File` synchronously to the
+menu. This changes the `CanvasHost` contract and cannot be validated here without instrumentation
+for clipboard/share lifecycle and a document swap during capture. It is therefore **deferred**, not
+implemented speculatively. The blocking render remains a known M1 limitation.
+
+### N.6 Files changed in this tranche
+
+| File | Change |
+|---|---|
+| `app/src/main/java/com/xnotes/canvas/CanvasState.kt` | Input flag and `beginInput`/`endInput`; WARM cancellation and visible-page promotion; prefetch suspension; `trimMemoryCaches`; `CacheEntry.empty`; shared 1×1 sentinel; flow predicate; append/repair guards; snapshot byte accounting |
+| `app/src/main/java/com/xnotes/canvas/CanvasView.kt` | Touch-stream input signal; clear on detach; skip blitting empty ink entries |
+| `app/src/main/java/com/xnotes/ui/Editor.kt` | Install `hasFlowContent` from the published flow; expose `trimMemoryCaches` for both panes |
+| `app/src/main/java/com/xnotes/EditorActivity.kt` | Trim off-screen canvas page caches under memory pressure |
+| `app/src/test/java/com/xnotes/canvas/PdfRenderSchedulingTest.kt` | Four M2 tests |
+| `app/src/test/java/com/xnotes/canvas/MemoryPressureCacheTest.kt` | New: four M3 tests |
+| `app/src/test/java/com/xnotes/canvas/EmptyInkSurfaceTest.kt` | New: seven M4 tests |
+| `docs/PHASE_3_HIGH_PRIORITY_FIXES.md` | This section |
+| `docs/phase-3-pdf-rendering-audit.md` | Medium-finding status table |
+
+### N.7 Verification
+
+- `:app:compileDebugKotlin` — **BUILD SUCCESSFUL**.
+- `:app:testDebugUnitTest` — **BUILD SUCCESSFUL**: **2589 tests, 0 failures, 0 errors, 0 skipped**
+  across 209 suites (was 2574 across 207; 15 new tests).
+  - `PdfRenderSchedulingTest`: 22/22.
+  - `MemoryPressureCacheTest`: 4/4.
+  - `EmptyInkSurfaceTest`: 7/7.
+  - Phase 1/2 and all pre-existing tests are included and pass.
+- `:app:assembleDebug` — **BUILD SUCCESSFUL**.
+
+`lintDebug` was not used as a gate: the repository’s pre-existing 302-error lint baseline is red
+before this work (see `docs/PHASE_3_HIGH_PRIORITY_FIXES.md` section H), and no renderer/JNI/API file
+was changed here.
+
+### N.8 Remaining risks and hardware work
+
+1. **M1 remains a main-thread stall** on screenshot/selection copy and share. It needs an async API
+   with snapshot/identity guarantees and instrumentation.
+2. **No measured memory or latency improvement is claimed.** M2/M3/M4 are proven only by JVM
+   scheduler/cache tests and source reasoning.
+3. **Memory pressure is not a byte budget.** `trimMemoryCaches` is a coarse visible-set eviction;
+   native, RenderThread-held and GC-owned memory still cannot be accounted precisely.
+4. **Input deferral ends at finger-up**, not at the end of a fling. Fling relies on priority and WARM
+   promotion; this trade-off needs device measurement.
+5. **Published sharp frames are still GC-owned** when replaced/cleared; no recycle rule was changed.
+6. **Physical-device testing still required:** real input latency, frame stability during
+   handwriting with background PDF work, `onTrimMemory` behavior, peak PSS, GC, and capture UI
+   responsiveness after an eventual M1 refactor.
