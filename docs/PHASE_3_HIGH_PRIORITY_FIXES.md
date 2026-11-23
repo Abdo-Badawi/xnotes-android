@@ -406,13 +406,14 @@ cmd.exe /c "gradlew.bat :app:testDebugUnitTest --offline --console=plain"
 ```
 
 **PASSED.** `BUILD SUCCESSFUL`.
-Aggregated XML results: **2553 tests, 0 skipped, 0 failures, 0 errors** across 206 suites.
+Aggregated XML results: **2567 tests, 0 skipped, 0 failures, 0 errors** across 207 suites.
 
 Focused results:
 
 | Suite | Tests | Result |
 |---|---|---|
-| `PdfRenderSchedulingTest` (new) | 12 | PASSED |
+| `PdfRenderSchedulingTest` (new) | 18 | PASSED |
+| `SharpViewportSurfaceCleanupTest` (new) | 8 | PASSED |
 | `PdfiumThreadTest` | 10 | PASSED |
 | `PageTextCacheTest` | 7 | PASSED |
 | `CacheBandTest` | 5 | PASSED |
@@ -421,7 +422,7 @@ Focused results:
 | `WetInkCacheTest` | 12 | PASSED |
 
 Phase 1/2 suites (`CrossPageStrokeTest`, stroke-tessellation tests, input tests, etc.) are included
-in the 2553 passing tests.
+in the 2567 passing tests.
 
 What the new tests actually verify:
 - `PdfRenderSchedulingTest` observes the hook’s priority/token and the cache maps after manually
@@ -469,7 +470,7 @@ this repository and was not claimed as passed.
 ### Phase 1 / Phase 2 preservation
 
 - Input classification files (`InteractionController`, `InputTouchRewriter`, `FrontInk`, provisional
-  replay) were not modified. The 2553-test suite includes the Phase 1/2 tests and passes.
+  replay) were not modified. The 2567-test suite includes the Phase 1/2 tests and passes.
 - `appendToCache`, `repairRegion`, `refreshInkRegions`, `refreshAllInk`, `appendToSharpInk`,
   `repairSharpInk` and `WetInkCache` were not changed.
 - `SharpViewportEditReplayTest` still proves edits during a sharp build are replayed.
@@ -519,17 +520,147 @@ allowed to run.
 
 ---
 
+## L. Post-implementation review fixes
+
+Two issues found while reviewing the first implementation are fixed in commit `a4eda44c`
+(`Narrow PDF invalidation and recycle unpublished sharp frames`). No other production file changed.
+
+### L.1 Background generation scope and cancellation
+
+**Root cause.** `cacheGen` was a single global generation used by both ink and PDF/template
+background builds. `invalidateBackground(page)` cancelled only that page's pending request/rebake and
+then bumped `cacheGen`; every other in-flight background build became unpublishable at the
+generation check but kept its token uncancelled, so a running PDFium render could continue to
+completion for no result. The same over-broad bump happened in ink-only paths (`refreshInk`,
+`refreshInkRegions`, `repairInkRegions`, `rebakeBackground`), which unnecessarily invalidated
+unrelated background work.
+
+**Fix.** `CanvasState` now has two generations:
+
+- `cacheGen` — ink/content builds (`scheduleInk`).
+- `bgGen` — PDF/template background builds (`scheduleBg`), checked by
+  `isBackgroundBuildCurrent` and at publish.
+
+`scheduleInk` uses `isInkBuildCurrent`; background builds use `bgGen` and their request token.
+Rebakes keep their existing token/`rebakeAgain` mechanism and no generation check, because a markup
+edit is what they are rebuilding for.
+
+**Generation audit (current code).**
+
+| Method | Generation bumped | Cancellation | Scope |
+|---|---|---|---|
+| `relayout` | `bgGen` | `cancelBackgroundRenders()` + `cancelSharpRender()` | all backgrounds (footprints moved) |
+| `settleRoom` | `cacheGen` then `relayout` | via `relayout` | ink + all backgrounds |
+| `invalidatePage(page)` | `cacheGen` | `cancelSharpRender()` only | ink only; backgrounds keep running |
+| `invalidateBackground(page)` | none | `pendingBg[page]?.token?.cancel()`, `rebakeTokens[page]?.cancel()` | that page only |
+| `invalidateAllBackgrounds` | `bgGen` | `cancelBackgroundRenders()` | all backgrounds |
+| `invalidatePageGeometry` | `bgGen` + `cacheGen` | `cancelBackgroundRenders()` + `cancelSharpRender()` | ink + all backgrounds |
+| `invalidateAllCaches` | `bgGen` + `cacheGen` | `cancelBackgroundRenders()` + `cancelSharpRender()` | everything |
+| `refreshInk` / `refreshAllInk` | `cacheGen` | `cancelSharpRender()` (the sharp generation moved) | ink + sharp only |
+| `refreshInkRegions` | `cacheGen` | sharp patched in place | ink + sharp patch |
+| `repairInkRegions` | `cacheGen` | sharp patched in place | ink + sharp patch |
+| `invalidateCachesForZoom` | `bgGen` + `cacheGen` | `cancelBackgroundRenders()` + `cancelSharpRender()` | ink + all backgrounds |
+| `invalidatePaper` | — | `cancelSharpRender()` | sharp only |
+| `rebakeBackground(page)` | none | `pendingBg[page]?.token?.cancel()` | that page's in-flight whole-layer build |
+
+Every `bgGen` increment is paired with `cancelBackgroundRenders()`, so a generation change cannot
+leave an uncancelled PDFium render behind. Identity-checked cleanup in `pendingInk`, `pendingBg` and
+`rebakeTokens` is unchanged: only the owning request can remove its pending mark.
+
+**Race notes.**
+
+- A per-page `invalidateBackground` cancels the target token; if its publish lambda is already queued
+  on the main thread, the token check rejects it; if it already published, the cache is removed
+  afterwards.
+- Cancelling the whole-layer build in `rebakeBackground` leaves the rebake/`rebakeAgain` path alone,
+  so “edits during a paint make one more after it” is preserved.
+- Ink-only refreshes no longer invalidate or cancel PDF backgrounds; their in-flight results remain
+  publishable.
+
+**Tests added** (`PdfRenderSchedulingTest`):
+
+- `invalidatingOneBackgroundCancelsOnlyThatPagesRequest`
+- `invalidatingAllBackgroundsCancelsEveryRequest`
+- `anInkInvalidationLeavesPendingBackgroundWorkValid`
+- `anInkPageInvalidationLeavesPendingBackgroundWorkValid`
+- `aMarkupEditCancelsOnlyTheTargetsWholeLayerBuild`
+- `relayoutCancelsPendingBackgroundWork`
+
+### L.2 Sharp viewport surface ownership
+
+**Root cause.** `requestSharpViewport` allocated `base` and `ink` before rendering but only handed
+them to `SharpFrame` on successful publication. A cancelled, stale, partial or view-mismatched
+request dropped both references and left the pixels for GC.
+
+**Fix.** The work now owns both locals and a `published` flag:
+
+- On success, `SharpFrame(base, ink, …)` takes ownership. Those surfaces are **not** recycled.
+- On every other exit — cancellation before/during/after allocation, stale generation, changed
+  view/row/scroll/zoom, partial allocation, or a thrown allocation/render — every surface that was
+  actually allocated is recycled before cleanup returns.
+- Partial allocation is safe: `base` is released when `ink` was never created; `ink` is released if
+  it exists but publication fails.
+- Surfaces are never recycled while `renderSharpFrame` is using them, and never when they are in
+  the published `sharpFrame`.
+
+The published frame itself keeps the previous eviction policy: replacing or clearing it drops the
+reference (GC reclaims it); this is outside the request's ownership, and no surface is recycled
+while it is still displayed.
+
+**Tests added** (`SharpViewportSurfaceCleanupTest`):
+
+- `cancellationBeforeAllocationCreatesNothing`
+- `cancellationAfterBaseAllocationRecyclesTheOnlySurfaceItMade`
+- `cancellationAfterBothAllocationsButBeforePublicationRecyclesBoth`
+- `cancellationDuringRenderingRecyclesBothSurfaces`
+- `aStaleViewRecyclesBothSurfacesEvenWithoutCancellation`
+- `partialAllocationRecyclesTheOnlySurfaceItMade`
+- `aFullInkRefreshCancelsAndReleasesAnInFlightSharpRequest`
+- `successfulPublicationTransfersOwnershipAndDoesNotRecycle`
+
+### L.3 Files and methods changed in this review
+
+| File | Change |
+|---|---|
+| `app/src/main/java/com/xnotes/canvas/CanvasState.kt` | `bgGen`; `isInkBuildCurrent`/`isBackgroundBuildCurrent`; generation/cancellation audit in `relayout`, `invalidatePage`, `invalidateBackground`, `invalidateAllBackgrounds`, `invalidatePageGeometry`, `invalidateAllCaches`, `refreshInk`, `invalidateCachesForZoom`, `rebakeBackground`; sharp surface recycling in `requestSharpViewport` |
+| `app/src/test/java/com/xnotes/canvas/PdfRenderSchedulingTest.kt` | Six generation/cancellation-scope tests |
+| `app/src/test/java/com/xnotes/canvas/SharpViewportSurfaceCleanupTest.kt` | New: eight ownership/cancellation/partial-allocation tests |
+
+### L.4 Verification for this review
+
+- `:app:compileDebugKotlin` — **PASSED**.
+- `:app:testDebugUnitTest` — **PASSED**: 2567 tests, 0 failures, 0 errors, 207 suites.
+  - `PdfRenderSchedulingTest`: 18/18.
+  - `SharpViewportSurfaceCleanupTest`: 8/8.
+- `:app:assembleDebug` — **PASSED**.
+
+No Android API, `minSdk`, PDF resolution/quality, `renderScale`, `maxCachePx`, priority ordering,
+PDFium single-threading or the ink/PDF executor split changed.
+
+### L.5 Remaining limitations
+
+- The published `sharpFrame` is not explicitly recycled when replaced/cleared; it remains owned by
+  the existing cache/GC policy. The request-level leak (unpublished surfaces) is fixed.
+- Cancellation is still page-level and stops at PDFium's next pause check.
+- No instrumentation or physical-device measurement was added.
+- `lintDebug` remains red on the repository's pre-existing 302-error baseline; it was not used as a
+  pass/fail gate for this review.
+
+---
+
 ## K. Git information
 
 | Item | Value |
 |---|---|
 | Branch | `phase-3-pdf-rendering` |
 | Implementation commit | `79238d10` — `Fix high-priority PDF rendering scheduling issues` |
-| Documentation | This report, committed on the same branch after `79238d10` |
+| Review-fix commit | `a4eda44c` — `Narrow PDF invalidation and recycle unpublished sharp frames` |
+| Documentation | This report, updated on the same branch after the review-fix commit |
 | Remote | `mine` = `https://github.com/Abdo-Badawi/xnotes-android.git` |
 | Pushed branch | `mine/phase-3-pdf-rendering` (the implementation commit was verified on the remote before this report was added) |
 | Pull request | Not created (only a branch push was requested; GitHub offered the create-PR URL) |
 
-The implementation commit contains the production changes, the focused tests, the adjusted hook-arity
-tests and the Phase 3 audit report. This report is in the branch-head documentation commit.
+The implementation commit contains the original production changes, focused tests, adjusted
+hook-arity tests and the Phase 3 audit report. The review-fix commit adds the generation-scope and
+sharp-ownership fixes with their tests. This report is updated in a follow-up documentation commit.
 `writing&performance_edits.txt` (untracked phase plan) was not staged or committed.
