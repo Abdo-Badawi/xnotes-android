@@ -253,4 +253,105 @@ class PdfRenderSchedulingTest {
         assertEquals(1, st.cacheSnapshot().bgPages)
         assertEquals(1, st.cacheSnapshot().inkPages)
     }
+
+    // --- Background-generation scope --------------------------------------
+
+    @Test
+    fun invalidatingOneBackgroundCancelsOnlyThatPagesRequest() {
+        val st = state(pageCount = 2)
+        val target = st.document.pages[0]
+        val other = st.document.pages[1]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(target)
+        st.backgroundForOrSchedule(other)
+        assertEquals(2, bgQueue.size)
+
+        st.invalidateBackground(target)
+        runBackground()
+
+        assertEquals("the cancelled page must not paint", listOf(other), paints.map { it.page })
+        assertEquals("only the other page is published", 1, st.cacheSnapshot().bgPages)
+        assertNull(st.rawBackgroundCache(target))
+        assertNotNull(st.rawBackgroundCache(other))
+        // Its pending mark was cleaned: a fresh request can be scheduled.
+        assertNull(st.backgroundForOrSchedule(target))
+        assertEquals(1, bgQueue.size)
+    }
+
+    @Test
+    fun invalidatingAllBackgroundsCancelsEveryRequest() {
+        val st = state(pageCount = 2)
+        val a = st.document.pages[0]
+        val b = st.document.pages[1]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(a)
+        st.backgroundForOrSchedule(b)
+        st.invalidateAllBackgrounds()
+        runBackground()
+        assertTrue(paints.isEmpty())
+        assertEquals(0, st.cacheSnapshot().bgPages)
+        assertNull(st.backgroundForOrSchedule(a)) // both pending marks were cleaned
+        assertNull(st.backgroundForOrSchedule(b))
+        assertEquals(2, bgQueue.size)
+    }
+
+    @Test
+    fun anInkInvalidationLeavesPendingBackgroundWorkValid() {
+        val st = state(pageCount = 1)
+        val page = st.document.pages[0]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(page)
+        st.refreshInk(emptyList()) // bumps only the ink generation
+        runBackground()
+        assertEquals(listOf(page), paints.map { it.page })
+        assertEquals(1, st.cacheSnapshot().bgPages)
+    }
+
+    @Test
+    fun anInkPageInvalidationLeavesPendingBackgroundWorkValid() {
+        val st = state(pageCount = 1)
+        val page = st.document.pages[0]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(page)
+        st.invalidatePage(page) // ink-only
+        runBackground()
+        assertEquals(listOf(page), paints.map { it.page })
+        assertEquals(1, st.cacheSnapshot().bgPages)
+    }
+
+    @Test
+    fun aMarkupEditCancelsOnlyTheTargetsWholeLayerBuild() {
+        val st = state(pageCount = 2)
+        val target = st.document.pages[0]
+        val other = st.document.pages[1]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(target) // a whole-layer build that read no markups yet
+        st.backgroundForOrSchedule(other)
+        val m = markup()
+        target.markups = listOf(m)
+        st.rebakeBackground(target, listOf(m)) // no old layer to rebake: cancels the stale build
+        runBackground()
+
+        assertEquals("the stale target build is gone; the other page still renders", listOf(other), paints.map { it.page })
+        assertNull(st.rawBackgroundCache(target))
+        assertNotNull(st.rawBackgroundCache(other))
+
+        // The next draw rebuilds the target from the edited markups.
+        st.backgroundForOrSchedule(target)
+        runBackground()
+        assertEquals(target, paints.last().page)
+        assertEquals(2, st.cacheSnapshot().bgPages)
+    }
+
+    @Test
+    fun relayoutCancelsPendingBackgroundWork() {
+        val st = state(pageCount = 1)
+        val page = st.document.pages[0]
+        st.updateCacheBand()
+        st.backgroundForOrSchedule(page)
+        st.relayout()
+        runBackground()
+        assertTrue(paints.isEmpty())
+        assertEquals(0, st.cacheSnapshot().bgPages)
+    }
 }

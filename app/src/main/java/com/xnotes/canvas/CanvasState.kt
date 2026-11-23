@@ -613,12 +613,17 @@ class CanvasState(
     private val staleInk = HashSet<Page>()
 
     /**
-     * Bumped by every cache invalidation. An in-flight async build captures the value at
-     * schedule time and checks it both before doing the expensive work and before publishing, so
-     * an edit (or zoom) that lands mid-build never gets overwritten by the stale surface — and a
-     * build that is already obsolete when its turn comes does not run at all.
+     * Bumped by every **ink/content** cache invalidation. An in-flight ink build captures the value
+     * at schedule time and checks it before doing the expensive work and before publishing.
      */
     @Volatile private var cacheGen = 0
+
+    /**
+     * Bumped only by invalidations that make in-flight **PDF/template background** builds obsolete.
+     * Keeping it separate from [cacheGen] means an ink edit (undo/redo, playback fade, erase repair)
+     * does not discard a PDF render that is still perfectly publishable.
+     */
+    @Volatile private var bgGen = 0
 
     // --- sharp viewport (past the resolution cap) ---
 
@@ -715,6 +720,7 @@ class CanvasState(
 
     fun relayout() {
         sharpGen++ // page layout / viewport size changed: the sharp viewport must re-render
+        bgGen++ // footprints/resolutions moved for every background build
         cancelSharpRender()
         cancelBackgroundRenders()
         bandKeep = null // re-derived at the start of the next frame
@@ -1324,13 +1330,21 @@ class CanvasState(
     private fun inBand(page: Page): Boolean = bandKeep?.contains(page) ?: true
 
     /**
-     * True when a scheduled build is still worth doing: the generation has not moved, the request
-     * has not been cancelled, and — for speculative work only — the page is still in the band.
-     * A visible page is checked against the band at publish time instead, because the draw loop
-     * schedules it before that frame's band has been published.
+     * True when an ink build is still worth doing: the ink generation has not moved, and —
+     * for speculative work only — the page is still in the band. A visible page is checked
+     * against the band at publish time instead, because the draw loop schedules it before that
+     * frame's band has been published.
      */
-    private fun isBuildCurrent(page: Page, gen: Int, prefetch: Boolean, token: CancelToken?): Boolean =
-        gen == cacheGen && (token == null || !token.isCancelled) && (!prefetch || inBand(page))
+    private fun isInkBuildCurrent(page: Page, gen: Int, prefetch: Boolean): Boolean =
+        gen == cacheGen && (!prefetch || inBand(page))
+
+    /**
+     * True when a PDF/template background build is still worth doing: the background generation
+     * has not moved, the request has not been cancelled, and speculative work is still in band.
+     */
+    private fun isBackgroundBuildCurrent(
+        page: Page, gen: Int, prefetch: Boolean, token: CancelToken,
+    ): Boolean = gen == bgGen && !token.isCancelled && (!prefetch || inBand(page))
 
     private fun scheduleInk(page: Page, res: Double, prefetch: Boolean) {
         if (pendingInk.containsKey(page)) return
@@ -1342,7 +1356,7 @@ class CanvasState(
         val work = {
             var entry: CacheEntry? = null
             try {
-                if (isBuildCurrent(page, gen, prefetch, null)) entry = renderInk(page, res, items, withFlow)
+                if (isInkBuildCurrent(page, gen, prefetch)) entry = renderInk(page, res, items, withFlow)
             } finally {
                 postToMain {
                     val mine = pendingInk[page] === request
@@ -1530,19 +1544,19 @@ class CanvasState(
         if (pendingBg.containsKey(page)) return
         val request = BackgroundRequest(CancelToken())
         pendingBg[page] = request
-        val gen = cacheGen
+        val gen = bgGen
         val seq = markupSeq // the build reads the markups after this, so it holds every edit up to here
         val work = {
             var entry: CacheEntry? = null
             try {
-                if (isBuildCurrent(page, gen, prefetch, request.token)) {
+                if (isBackgroundBuildCurrent(page, gen, prefetch, request.token)) {
                     entry = buildBackground(page, res, priority, request.token)
                 }
             } finally {
                 postToMain {
                     val mine = pendingBg[page] === request
                     if (mine) pendingBg.remove(page)
-                    if (entry != null && mine && gen == cacheGen && inBand(page) && !request.token.isCancelled) {
+                    if (entry != null && mine && gen == bgGen && inBand(page) && !request.token.isCancelled) {
                         bgCaches[page] = entry.also { it.seq = seq }
                     }
                     onCacheReady?.invoke() // discarded or not; see [scheduleInk]
@@ -1608,8 +1622,10 @@ class CanvasState(
     fun rebakeBackground(page: Page, added: List<TextMarkup>) {
         val seq = ++markupSeq
         if (added.isNotEmpty()) unbaked.getOrPut(page) { ArrayList() }.addAll(added.map { Unbaked(seq, it) })
-        // A whole-layer build under way may have read the markups before the edit.
-        cacheGen++
+        // A whole-layer build of this page, already in flight, may have read the markups before the
+        // edit. Cancel just that request: it is per-page, so other pages' PDF renders keep going,
+        // and its token check keeps the stale result from publishing.
+        pendingBg[page]?.token?.cancel()
         if (pendingSharp) sharpAgain = true else if (sharpFrame?.gen == sharpGen) requestSharpViewport()
         val entry = bgCaches[page] ?: return
         if (entry.usableFor(page, clampedRes(page))) scheduleRebake(page) // else the draw loop builds it anew
@@ -1762,8 +1778,8 @@ class CanvasState(
         caches.remove(page)
         staleInk.remove(page)
         if (roomView?.page === page && roomView?.live == false) roomView = null
-        // The generation bump discards every in-flight build; stop them doing the work now.
-        cancelBackgroundRenders()
+        // Ink-only: the PDF/template background of this and every other page is still valid, so no
+        // background request is cancelled. The ink generation skips its own queued builds.
         cancelSharpRender()
         cacheGen++
         sharpGen++
@@ -1785,17 +1801,18 @@ class CanvasState(
 
     fun invalidateBackground(page: Page) {
         bgCaches.remove(page)
+        // Per-page invalidation: cancel only this page's whole-layer build and rebake. Their token
+        // checks keep either from publishing after this point; other pages are unaffected.
         pendingBg[page]?.token?.cancel()
         rebakeTokens[page]?.cancel()
-        cacheGen++
         sharpGen++
         cancelSharpRender()
     }
 
     fun invalidateAllBackgrounds() {
         bgCaches.clear()
+        bgGen++
         cancelBackgroundRenders()
-        cacheGen++
         sharpGen++
         cancelSharpRender()
     }
@@ -1808,6 +1825,7 @@ class CanvasState(
      * what schedules the rebuild (see [usableFor]).
      */
     fun invalidatePageGeometry() {
+        bgGen++
         cancelBackgroundRenders()
         cacheGen++
         sharpGen++
@@ -1822,6 +1840,7 @@ class CanvasState(
         unbaked.clear()
         hlCaches.clear()
         wetInk.clear()
+        bgGen++
         cancelBackgroundRenders()
         cancelSharpRender()
         bandKeep = null
@@ -1877,6 +1896,7 @@ class CanvasState(
     fun refreshInk(pages: Collection<Page>) {
         cacheGen++
         sharpGen++
+        cancelSharpRender() // this pass cannot patch the sharp layer, and its generation just moved
         for (page in pages) {
             if (page !in caches) continue
             staleInk.add(page)
@@ -1938,6 +1958,7 @@ class CanvasState(
      */
     fun invalidateCachesForZoom() {
         cacheGen++
+        bgGen++
         cancelBackgroundRenders()
         cancelSharpRender()
     }
@@ -2199,14 +2220,25 @@ class CanvasState(
                         sharpRequest = null
                         pendingSharp = false
                     }
-                    if (base != null && ink != null && mine && !request.token.isCancelled &&
+                    val b = base
+                    val i = ink
+                    var published = false
+                    if (b != null && i != null && mine && !request.token.isCancelled &&
                         gen == sharpGen && row == currentRow && !pageFlipAnimating &&
                         sx == scrollX && sy == scrollY && z == zoom
                     ) {
-                        sharpFrame = SharpFrame(base, ink, sx, sy, z, gen, row, seq)
+                        // Ownership moves to the published frame; it is not recycled here.
+                        sharpFrame = SharpFrame(b, i, sx, sy, z, gen, row, seq)
+                        published = true
                         // Replay edits committed during the build; the item snapshot predates them.
                         for ((p, rect) in pendingSharpEdits) repairSharpInk(p, rect)
                         onCacheReady?.invoke()
+                    }
+                    // A cancelled, stale, partial or failed frame owns nothing on screen: release
+                    // every surface that was allocated. Only the published frame is kept above.
+                    if (!published) {
+                        b?.recycle()
+                        i?.recycle()
                     }
                     pendingSharpEdits.clear()
                     if (sharpAgain) {
