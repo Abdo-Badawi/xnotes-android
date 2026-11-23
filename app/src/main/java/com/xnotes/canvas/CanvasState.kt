@@ -1975,7 +1975,14 @@ class CanvasState(
     fun paintLiveStroke(r: Renderer, stroke: Stroke, pageIndex: Int = -1) {
         val res = (zoom * renderScale).coerceAtLeast(0.01)
         val cap = 2L * max(viewportW, 1) * max(viewportH, 1)
-        val grid = if (rotationDeg == 0 && abs(res - zoom) < 1e-9) liveInkGrid(pageIndex) else null
+        // Only the sharp layer is a screen-space raster to match. Below the cap the committed ink
+        // is the same filtered page cache live ink has always been drawn through, so leave that
+        // path untouched rather than making the live stroke briefly sharper than its pen-up result.
+        val grid = if (isPastResolutionCap() && rotationDeg == 0 && abs(res - zoom) < 1e-9) {
+            liveInkGrid(pageIndex)
+        } else {
+            null
+        }
         if (!wetInk.paint(r, stroke, res, cap, grid?.x ?: Double.NaN, grid?.y ?: Double.NaN)) {
             stroke.paint(r)
         }

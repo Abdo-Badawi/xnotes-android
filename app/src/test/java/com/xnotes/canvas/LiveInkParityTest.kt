@@ -60,6 +60,7 @@ class LiveInkParityTest {
     @Test
     fun liveInkBlitLandsOnTheDevicePixelGridAtEveryZoom() {
         val st = state()
+        st.maxCachePx = 100.0 // the sharp layer is active at every zoom in this test
         val stroke = liveStroke()
         for (zoom in listOf(1.0, 2.0, 4.0)) {
             st.zoom = zoom
@@ -75,6 +76,18 @@ class LiveInkParityTest {
                 surface.width.toDouble(), dest.w * zoom, 1e-6)
             assertEquals(surface.height.toDouble(), dest.h * zoom, 1e-6)
         }
+    }
+
+    @Test
+    fun belowTheCacheCapKeepsTheExistingFilteredBlit() {
+        val st = state()
+        st.maxCachePx = 4096.0
+        st.zoom = 1.0
+        val screen = FakeRenderer()
+        st.paintLiveStroke(screen, liveStroke(), 0)
+        assertFalse("this view is deliberately below the sharp cap", st.isPastResolutionCap())
+        assertTrue("the filtered path changed below the cap", screen.exactRasterDests.isEmpty())
+        assertTrue("the live stroke was not blitted at all", screen.rasterDests.isNotEmpty())
     }
 
     @Test
