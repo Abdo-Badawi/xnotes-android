@@ -120,7 +120,7 @@ All run from the Windows toolchain (`cmd.exe /c gradlew.bat … --offline`), JDK
 4. **Infinite canvas** is untouched (keeps its own input/front-buffer pipeline).
 5. **Ambiguous pan/erase after provisional draw**: the ink is shown for up to the classification window, then rolled back and the held events replayed as the resolved gesture. Ink is correctly removed (no model edit, no undo entry); a brief visible ink flash is possible on panels whose contact size resolves late. This is the deliberate trade for immediate handwriting; it does not affect the final gesture.
 6. **Pressure on a no-match short stroke** is the panel's pressure (the provisional pointer is a stylus), not the finger default of `1.0`; width-only, no shape/position change.
-7. **Page crossing while provisional** is suppressed. A real write that leaves the page inside the classification window keeps its off-page part clipped to the starting page. Extremely unlikely for handwriting; it prevents filing ink that could not be rolled back.
+7. **Page crossing while provisional** is deferred, not clipped: on confirmation the held events are replayed as a normal Write so the existing hand-over splits the stroke onto each page. Pan/Erase resolution still rolls back without filing anything. Straight lines keep the pre-existing single-segment behaviour.
 8. **API 23:** no new APIs were used; the app's `minSdk` remains 26, so Android 6 compatibility is unchanged from Phase 0.
 
 ---
@@ -135,3 +135,45 @@ All run from the Windows toolchain (`cmd.exe /c gradlew.bat … --offline`), JDK
 ---
 
 **Status:** Phase 1 code complete on `phase-1-input-latency`; build and existing tests green. Waiting for review before Phase 2.
+
+---
+
+## 7. Review follow-up — pinch and cross-page corrections (uncommitted, pending review)
+
+### 7.1 Issue 1 — pinch regression
+
+**Root cause:** the provisional stroke was rewritten to `TOOL_TYPE_STYLUS`. `InteractionController.handlePointerDown` returns early for `mode == DRAW && drawingIsStylus`, so a second pointer was ignored. Before Phase 1, an **unmatched** finger draw stayed `FINGER`; a second pointer reached `beginPinch(e)`, which discarded the live stroke. (A matched Write/real stylus ignored the second pointer, as intended.)
+
+**Fix:**
+- `InteractionController.strokePinchable`: true for a provisional stroke and for a no-match confirmation (the default finger draw); false for a matched `WRITE`/`ALT_WRITE` or a real stylus.
+- `handlePointerDown`: when `DRAW && drawingIsStylus && strokePinchable && pointerCount >= 2`, and no recorded Pan won, clear the stroke/snap state and call `beginPinch(e)`. The pinch anchors on the **current** two-pointer positions, so the viewport does not jump; `beginPinch` clears `liveStroke`, so no ink is committed.
+- Recorded Pan keeps precedence: `inputPanOverride`/`inputMultiPan` fall through to the existing Pan handling.
+- `EditorActivity` checks `isInputPinching()` after dispatching a provisional second pointer and stops its replay window (`stopProvisionalForGesture`).
+- Matched Write/Alt-Write/stylus still ignore a resting second pointer, preserving palm rejection.
+
+### 7.2 Issue 2 — page crossing
+
+**Root cause:** `addStrokePoint` suppressed `handOverStroke` while provisional. The samples outside the starting page stayed in that page's stroke and were clipped when confirmed. Pre-Phase-1 `handOverStroke` split the stroke, filed the completed segment, bridged the last point, and continued on the new page; nothing was discarded.
+
+**Fix:**
+- `CanvasState.strokeCrossesPage(pageIndex, stroke)` maps each sample back to content and asks `pageIndexAtContent`; gap samples do not count, straight strokes are excluded (they never handed over before).
+- Before confirming a Write or a no-match stroke, `EditorActivity.confirmProvisional` checks `inputStrokeCrossedPage()`. If true, it rolls back and replays the held events as a **normal** Write (`resolveProvisional(WRITE, pinchable)`), so the proven `handOverStroke` split/files/bridges every page. `confirmProvisional` returns `true` so the caller does not dispatch the current event twice.
+- Pan/Erase resolution still cancels with no hand-over and therefore files nothing.
+- A crossing replay that settled as the default finger draw remains pinchable (`markInputStrokePinchable`), matching pre-Phase-1 finger-draw → pinch behavior.
+
+### 7.3 Tests and verification
+
+- `CrossPageStrokeTest`: added `aSampleThatMapsToAnotherPageIsDetected` and `aGapSampleIsNotAnotherPage`; the focused run and the full suite pass.
+- `:app:testDebugUnitTest` and `:app:assembleDebug` both **BUILD SUCCESSFUL**.
+- Pinch/Compose/GL-pad behavior remains **device-dependent** (needs real `MotionEvent`s and the panel): a JVM test cannot construct the multi-pointer events.
+
+### 7.4 Remaining device-dependent limitations
+
+- Pinch vs palm/second pointer after a no-match confirmation on the target panel.
+- Recorded-Pan precedence over pinch with a real second finger.
+- Synthetic `ACTION_CANCEL` and the replay-as-Write crossing path in Compose/AndroidView and across the GL Wet Pad handover.
+- A crossing confirmation can show a brief rollback/redraw flash (correctness over a clipped stroke).
+- No-match pressure width vs the finger default `1.0` (width-only).
+- Android 6 compatibility is unchanged from Phase 0 (`minSdk` 26).
+
+**Status:** follow-up fixes are in the working tree of `phase-1-input-latency`, built and unit-tested, **not committed**; waiting for review. Phase 2 not started.

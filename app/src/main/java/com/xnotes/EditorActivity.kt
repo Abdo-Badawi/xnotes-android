@@ -414,27 +414,36 @@ class EditorActivity : ComponentActivity() {
                 resolveProvisional(active, resolved)
             }
             resolved == InputFunction.WRITE -> {
-                confirmProvisional(active)
-                dispatchClassified(
-                    ev, active, false, -1, classifySize = peak,
-                    forceFirstPointerFunction = InputFunction.WRITE,
-                )
+                if (!confirmProvisional(active, pinchable = false)) {
+                    dispatchClassified(
+                        ev, active, false, -1, classifySize = peak,
+                        forceFirstPointerFunction = InputFunction.WRITE,
+                    )
+                }
             }
             ev.actionMasked == MotionEvent.ACTION_UP || liftOfStroke -> {
                 if (inputDebug) {
                     val ms = (System.nanoTime() - provisionalStartNs) / 1_000_000
                     Log.d(INPUT_LOG_TAG, "provisional confirm in ${ms}ms (no settled match)")
                 }
-                confirmProvisional(active)
+                // No signature matched: this is the pre-Phase-1 default finger draw, so a later
+                // second pointer may still turn it into a pinch.
+                if (!confirmProvisional(active, pinchable = true)) {
+                    dispatchClassified(
+                        ev, active, false, -1, classifySize = peak,
+                        forceFirstPointerFunction = InputFunction.WRITE,
+                    )
+                }
+            }
+            else -> {
                 dispatchClassified(
                     ev, active, false, -1, classifySize = peak,
                     forceFirstPointerFunction = InputFunction.WRITE,
                 )
+                // The controller turned the second pointer into a pinch (the pre-Phase-1 finger
+                // draw rule). Stop replaying; the pinch now owns the gesture.
+                if (active.isInputPinching()) stopProvisionalForGesture(active)
             }
-            else -> dispatchClassified(
-                ev, active, false, -1, classifySize = peak,
-                forceFirstPointerFunction = InputFunction.WRITE,
-            )
         }
     }
 
@@ -443,8 +452,11 @@ class EditorActivity : ComponentActivity() {
      * latch, and replay the held events from the original down through the exact classified path.
      * Erase therefore covers the whole path, and a multi-finger Pan starts from its original
      * centroid, not from wherever the first finger had reached.
+     *
+     * [pinchable] is true only for a replay that settled as the default finger draw (no signature
+     * matched); it keeps the replayed stroke yieldable to a later second pointer, as before Phase 1.
      */
-    private fun resolveProvisional(active: Editor, function: InputFunction) {
+    private fun resolveProvisional(active: Editor, function: InputFunction, pinchable: Boolean = false) {
         val events = ArrayList(inputBuffer)
         val peaks = HashMap(inputBufferMaxByCount)
         inputBufferHandler.removeCallbacks(inputBufferTimeout)
@@ -466,6 +478,7 @@ class EditorActivity : ComponentActivity() {
                     forceFirstPointerFunction = function,
                 )
             }
+            if (pinchable) active.markInputStrokePinchable()
         } finally {
             for (ev in events) ev.recycle()
         }
@@ -483,15 +496,36 @@ class EditorActivity : ComponentActivity() {
         }
     }
 
-    /** Keep the provisional stroke and stop replaying: the size settled as (or stayed) a write. */
-    private fun confirmProvisional(active: Editor? = editor?.active) {
-        if (!provisionalActive) return
+    /**
+     * Keep the provisional stroke and stop replaying. [pinchable] records whether it is the default
+     * finger draw (no match) or a matched Write. If the stroke has already crossed onto another
+     * page, the held events are replayed as a normal Write so the proven hand-over preserves every
+     * point; returns true in that case, because the caller must not dispatch the current event again.
+     */
+    private fun confirmProvisional(active: Editor? = editor?.active, pinchable: Boolean = true): Boolean {
+        if (!provisionalActive) return false
+        if (active != null && active.inputStrokeCrossedPage() && inputBuffer.isNotEmpty()) {
+            resolveProvisional(active, InputFunction.WRITE, pinchable)
+            return true
+        }
         inputBufferHandler.removeCallbacks(inputBufferTimeout)
         for (ev in inputBuffer) ev.recycle()
         inputBuffer.clear()
         inputBufferMaxByCount.clear()
         provisionalActive = false
-        active?.confirmProvisionalInput()
+        active?.confirmProvisionalInput(pinchable)
+        return false
+    }
+
+    /** The controller took the second pointer as a pinch; stop replaying and let the pinch own it. */
+    private fun stopProvisionalForGesture(active: Editor) {
+        inputBufferHandler.removeCallbacks(inputBufferTimeout)
+        for (ev in inputBuffer) ev.recycle()
+        inputBuffer.clear()
+        inputBufferMaxByCount.clear()
+        provisionalActive = false
+        active.inputCustomization.resetClassification()
+        if (inputDebug) Log.d(INPUT_LOG_TAG, "provisional yielded to pinch")
     }
 
     /** Discard the provisional stroke and its replay log; nothing is committed. */

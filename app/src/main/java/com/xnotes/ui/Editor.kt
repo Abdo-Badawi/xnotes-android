@@ -2939,12 +2939,23 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         if (!canvasOpen) controller.beginProvisionalStroke()
     }
 
-    fun confirmProvisionalInput() {
-        if (!canvasOpen) controller.confirmProvisionalStroke()
+    fun confirmProvisionalInput(pinchable: Boolean) {
+        if (!canvasOpen) controller.confirmProvisionalStroke(pinchable)
     }
 
     fun cancelProvisionalInput() {
         if (!canvasOpen) controller.cancelProvisionalStroke()
+    }
+
+    /** True when the controller took the second pointer as a pinch. */
+    fun isInputPinching(): Boolean = !canvasOpen && controller.isPinching
+
+    /** True when the live provisional stroke has samples that map to another page. */
+    fun inputStrokeCrossedPage(): Boolean = !canvasOpen && controller.inputStrokeCrossedPage()
+
+    /** The replayed default-finger stroke may still yield to a pinch, as it did before Phase 1. */
+    fun markInputStrokePinchable() {
+        if (!canvasOpen) controller.markStrokePinchable()
     }
 
     /** Apply edited preferences live and persist (used by the Preferences dialog). */

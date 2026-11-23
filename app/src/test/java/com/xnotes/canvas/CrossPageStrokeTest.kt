@@ -3,8 +3,13 @@ package com.xnotes.canvas
 import com.xnotes.core.FakeSurfaceFactory
 import com.xnotes.core.geometry.Pt
 import com.xnotes.core.model.Document
+import com.xnotes.core.model.Stroke
+import com.xnotes.core.stroke.Sample
+import com.xnotes.core.tools.Tool
+import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.ui.theme.Palette
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,5 +61,39 @@ class CrossPageStrokeTest {
         assertEquals(content.y, back.y, 1e-9)
         // ...and it sits outside the new page's content box, so the join is clipped at the edge.
         assertTrue(bridge.x < 0.0 || bridge.y < 0.0 || bridge.x > page.width || bridge.y > page.height)
+    }
+
+    /** The provisional path uses this to decide whether a kept stroke must be replayed across pages. */
+    @Test fun aSampleThatMapsToAnotherPageIsDetected() {
+        val st = state()
+        val cfg = ToolDefaults.configFor(Tool.PEN)
+        val p1 = st.pageRects[1]
+        val onPage1 = Pt(p1.left + 20.0, p1.top + 20.0)
+        val asPage0 = st.toPageSpace(0, onPage1)
+        val crossing = Stroke(Tool.PEN, cfg).apply {
+            addSample(Sample(10.0, 10.0, 1.0, 0.0))
+            addSample(Sample(asPage0.x, asPage0.y, 1.0, 10.0))
+        }
+        assertTrue(st.strokeCrossesPage(0, crossing))
+
+        val inside = Stroke(Tool.PEN, cfg).apply {
+            addSample(Sample(10.0, 10.0, 1.0, 0.0))
+            addSample(Sample(20.0, 20.0, 1.0, 10.0))
+        }
+        assertFalse(st.strokeCrossesPage(0, inside))
+    }
+
+    /** A sample in the gap belongs to neither page, exactly as [CanvasState.pageIndexAtContent] says. */
+    @Test fun aGapSampleIsNotAnotherPage() {
+        val st = state()
+        val cfg = ToolDefaults.configFor(Tool.PEN)
+        val p0 = st.pageRects[0]
+        val gap = Pt(p0.left + 20.0, p0.bottom + st.pageGap / 2.0)
+        val asPage0 = st.toPageSpace(0, gap)
+        val stroke = Stroke(Tool.PEN, cfg).apply {
+            addSample(Sample(10.0, 10.0, 1.0, 0.0))
+            addSample(Sample(asPage0.x, asPage0.y, 1.0, 10.0))
+        }
+        assertFalse(st.strokeCrossesPage(0, stroke))
     }
 }

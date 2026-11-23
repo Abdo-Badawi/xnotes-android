@@ -296,6 +296,12 @@ class InteractionController(
     private var provisionalStroke = false
     /** Set by the activity just before a provisional down; consumed by [beginDraw] on that down. */
     private var nextStrokeProvisional = false
+    /**
+     * The live stroke is the default finger draw, which the pre-Phase-1 rules let a second pointer
+     * turn into a pinch: true while provisional and after a no-match confirmation. False for a
+     * matched Write/Alt-Write or a real stylus, where a resting hand must be ignored.
+     */
+    private var strokePinchable = false
 
     // SHAPE SNAP (hold a freehand stroke still → it becomes a real shape)
     /** Pending "pen held still" timer; non-null only while a stroke is eligible and armed. */
@@ -1024,6 +1030,28 @@ class InteractionController(
             return
         }
         if (mode == PointerMode.RULER_ROTATE) return // handle-drag rotation ignores extra fingers
+        // A provisional unmatched finger is the pre-Phase-1 finger draw: a second pointer abandons
+        // it and starts a pinch from the two current positions. A matched Write or a real stylus
+        // keeps ignoring the second pointer, as it always has. A recorded Pan still wins over the
+        // pinch, exactly as it did over a finger draw.
+        if (mode == PointerMode.DRAW && drawingIsStylus && strokePinchable && e.pointerCount >= 2) {
+            if (inputPanOverride || inputMultiPan) {
+                drawingIsStylus = false
+                strokePinchable = false
+                // Fall through to the recorded-Pan handling below.
+            } else {
+                strokePinchable = false
+                provisionalStroke = false
+                nextStrokeProvisional = false
+                // The discarded stroke's snap/dwell state must not leak into the pinch or the next stroke.
+                snapEngaged = false
+                snapRunStartEdge = null
+                snapCurrentEdge = null
+                snapPenViewport = null
+                beginPinch(e)
+                return
+            }
+        }
         if (mode == PointerMode.DRAW && drawingIsStylus) return
         // Tape laid with the pen ignores a resting hand as its ink does; laid with a finger, it yields to the pinch.
         if (mode == PointerMode.TAPE && drawingIsStylus) return
@@ -1214,6 +1242,22 @@ private fun handlePointerUp(e: MotionEvent) {
         inputPanOverride = false
     }
 
+    /** The live gesture is a pinch, so the activity can stop its provisional replay window. */
+    val isPinching: Boolean get() = mode == PointerMode.PINCH
+
+    /** Mark the live stroke as the default finger draw, which a second pointer may pinch away. */
+    fun markStrokePinchable() {
+        if (mode == PointerMode.DRAW && liveStroke != null) strokePinchable = true
+    }
+
+    /** Whether the live provisional stroke has walked onto another page. */
+    fun inputStrokeCrossedPage(): Boolean {
+        if (!provisionalStroke) return false
+        val stroke = liveStroke ?: return false
+        val pi = strokePageIndex ?: return false
+        return state.strokeCrossesPage(pi, stroke)
+    }
+
     /**
      * Whether a provisional (immediately rendered) stroke can safely begin. Provisional ink is only
      * used for a plain finger draw; a press that would select, edit text, grab the ruler or start a
@@ -1239,10 +1283,15 @@ private fun handlePointerUp(e: MotionEvent) {
         nextStrokeProvisional = true
     }
 
-    /** Classification confirmed a write: the provisional stroke is kept as an ordinary stroke. */
-    fun confirmProvisionalStroke() {
+    /**
+     * Classification settled: keep the provisional stroke. [pinchable] is true when it settled as
+     * the default finger draw (no recorded signature matched), so a later second pointer may still
+     * turn it into a pinch; false for a matched Write, where a resting hand is ignored.
+     */
+    fun confirmProvisionalStroke(pinchable: Boolean) {
         nextStrokeProvisional = false
         provisionalStroke = false
+        strokePinchable = pinchable
     }
 
     /**
@@ -1274,6 +1323,7 @@ private fun handlePointerUp(e: MotionEvent) {
         strokeStartTimeMs = 0L
         steadier = null
         provisionalStroke = false
+        strokePinchable = false
         mode = PointerMode.IDLE
         requestRender()
     }
@@ -1391,6 +1441,7 @@ private fun handlePointerUp(e: MotionEvent) {
     ) {
         val pageIndex = state.pageIndexAtContent(content) ?: return
         provisionalStroke = provisional
+        strokePinchable = provisional
         // Reaching here with a live selection means the press landed off it (on it the stylus would
         // have grabbed it): dismiss it. A bare tap that only dismissed is dropped in endDraw.
         strokeDismissedSelection = hasSelection
@@ -1693,6 +1744,7 @@ private fun handlePointerUp(e: MotionEvent) {
         snapCurrentEdge = null
         snapPenViewport = null
         provisionalStroke = false
+        strokePinchable = false
         mode = PointerMode.IDLE
         // A mid-stroke snap left a shape selected; now that the gesture is idle, surface its menu.
         if (snappedSelectionPendingMenu) {
@@ -4608,6 +4660,7 @@ private fun handlePointerUp(e: MotionEvent) {
         panVel = Pt.ZERO
         provisionalStroke = false
         nextStrokeProvisional = false
+        strokePinchable = false
     }
 
     private fun stepOverscrollSettle(frameTimeNanos: Long) {
@@ -4770,6 +4823,7 @@ private fun handlePointerUp(e: MotionEvent) {
         textDragRect = null
         provisionalStroke = false
         nextStrokeProvisional = false
+        strokePinchable = false
         // Cancel an in-progress capture drag; a frozen capture (mode IDLE) survives.
         if (mode == PointerMode.SHOT) { screenshotRect = null; onScreenshotMenu(null) }
         if (mode == PointerMode.PINCH && state.zoomingInProgress) {

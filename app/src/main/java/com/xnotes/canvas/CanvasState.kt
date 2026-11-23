@@ -372,6 +372,22 @@ class CanvasState(
         return Pt(pr.left + d.x, pr.top + d.y)
     }
 
+    /**
+     * Whether [stroke], whose samples are page-space of page [pageIndex], has a sample that maps to
+     * a different page. Used to decide whether a provisional stroke that was kept on its starting
+     * page must be replayed through the normal hand-over so its off-page part is not clipped.
+     * Gap samples belong to no page and do not count, exactly as [pageIndexAtContent] treats them.
+     */
+    fun strokeCrossesPage(pageIndex: Int, stroke: Stroke): Boolean {
+        if (stroke.straight) return false // a straight line is one segment by definition
+        for (i in 0 until stroke.sampleCount) {
+            val content = fromPageSpace(pageIndex, Pt(stroke.xAt(i), stroke.yAt(i)))
+            val page = pageIndexAtContent(content)
+            if (page != null && page != pageIndex) return true
+        }
+        return false
+    }
+
     /** An axis-aligned content rect mapped into page [i]'s page space (re-normalized). */
     fun toPageSpaceRect(i: Int, r: Rect): Rect =
         Rect.fromPoints(toPageSpace(i, Pt(r.left, r.top)), toPageSpace(i, Pt(r.right, r.bottom)))
