@@ -525,11 +525,11 @@ allowed to run.
 |---|---|
 | Branch | `phase-3-pdf-rendering` |
 | Implementation commit | `79238d10` — `Fix high-priority PDF rendering scheduling issues` |
+| Documentation | This report, committed on the same branch after `79238d10` |
 | Remote | `mine` = `https://github.com/Abdo-Badawi/xnotes-android.git` |
-| Pushed branch | See the final report / `git ls-remote`; the implementation was prepared for `mine/phase-3-pdf-rendering` |
-| Pull request | Not created by this task (only a branch push was requested) |
-| Documentation commit | Added immediately after the implementation commit; this report describes the code in `79238d10` |
+| Pushed branch | `mine/phase-3-pdf-rendering` (the implementation commit was verified on the remote before this report was added) |
+| Pull request | Not created (only a branch push was requested; GitHub offered the create-PR URL) |
 
 The implementation commit contains the production changes, the focused tests, the adjusted hook-arity
-tests and the Phase 3 audit report. `writing&performance_edits.txt` (untracked phase plan) was not
-staged or committed.
+tests and the Phase 3 audit report. This report is in the branch-head documentation commit.
+`writing&performance_edits.txt` (untracked phase plan) was not staged or committed.
