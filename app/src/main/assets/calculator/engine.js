@@ -50,25 +50,32 @@
   ].forEach(([f, d]) => def(f, d, 'post', { f }));
 
   // Unit conversions (postfix). Linear ones are a factor; temperatures are functions.
+  // The fourth field is the ES category used by the on-screen category menu.
   const CONV = [
-    ['in-cm', 'in▶cm', 2.54], ['cm-in', 'cm▶in', 1 / 2.54],
-    ['ft-m', 'ft▶m', 0.3048], ['m-ft', 'm▶ft', 1 / 0.3048],
-    ['yd-m', 'yd▶m', 0.9144], ['m-yd', 'm▶yd', 1 / 0.9144],
-    ['mi-km', 'mile▶km', 1.609344], ['km-mi', 'km▶mile', 1 / 1.609344],
-    ['nmi-m', 'n mile▶m', 1852], ['m-nmi', 'm▶n mile', 1 / 1852],
-    ['lb-kg', 'lb▶kg', 0.45359237], ['kg-lb', 'kg▶lb', 1 / 0.45359237],
-    ['oz-g', 'oz▶g', 28.349523125], ['g-oz', 'g▶oz', 1 / 28.349523125],
-    ['gal-L', 'gal(US)▶L', 3.785411784], ['L-gal', 'L▶gal(US)', 1 / 3.785411784],
-    ['mph-kmh', 'mph▶km/h', 1.609344], ['kmh-mph', 'km/h▶mph', 1 / 1.609344],
-    ['ms-kmh', 'm/s▶km/h', 3.6], ['kmh-ms', 'km/h▶m/s', 1 / 3.6],
-    ['acre-m2', 'acre▶m²', 4046.8564224], ['m2-acre', 'm²▶acre', 1 / 4046.8564224],
-    ['atm-Pa', 'atm▶Pa', 101325], ['Pa-atm', 'Pa▶atm', 1 / 101325],
-    ['hp-kW', 'hp▶kW', 0.745699872], ['kW-hp', 'kW▶hp', 1 / 0.745699872],
-    ['cal-J', 'cal▶J', 4.184], ['J-cal', 'J▶cal', 1 / 4.184],
-    ['F-C', '°F▶°C', x => (x - 32) * 5 / 9], ['C-F', '°C▶°F', x => x * 9 / 5 + 32],
-    ['K-C', 'K▶°C', x => x - 273.15], ['C-K', '°C▶K', x => x + 273.15]
+    ['in-cm', 'in▶cm', 2.54, 'Length'], ['cm-in', 'cm▶in', 1 / 2.54, 'Length'],
+    ['ft-m', 'ft▶m', 0.3048, 'Length'], ['m-ft', 'm▶ft', 1 / 0.3048, 'Length'],
+    ['yd-m', 'yd▶m', 0.9144, 'Length'], ['m-yd', 'm▶yd', 1 / 0.9144, 'Length'],
+    ['mi-km', 'mile▶km', 1.609344, 'Length'], ['km-mi', 'km▶mile', 1 / 1.609344, 'Length'],
+    ['nmi-m', 'n mile▶m', 1852, 'Length'], ['m-nmi', 'm▶n mile', 1 / 1852, 'Length'],
+    ['pc-km', 'pc▶km', 3.0856775814913673e13, 'Length'], ['km-pc', 'km▶pc', 1 / 3.0856775814913673e13, 'Length'],
+    ['acre-m2', 'acre▶m²', 4046.8564224, 'Area'], ['m2-acre', 'm²▶acre', 1 / 4046.8564224, 'Area'],
+    ['gal-L', 'gal(US)▶L', 3.785411784, 'Volume'], ['L-gal', 'L▶gal(US)', 1 / 3.785411784, 'Volume'],
+    ['galUK-L', 'gal(UK)▶L', 4.54609, 'Volume'], ['L-galUK', 'L▶gal(UK)', 1 / 4.54609, 'Volume'],
+    ['lb-kg', 'lb▶kg', 0.45359237, 'Mass'], ['kg-lb', 'kg▶lb', 1 / 0.45359237, 'Mass'],
+    ['oz-g', 'oz▶g', 28.349523125, 'Mass'], ['g-oz', 'g▶oz', 1 / 28.349523125, 'Mass'],
+    ['mph-kmh', 'mph▶km/h', 1.609344, 'Velocity'], ['kmh-mph', 'km/h▶mph', 1 / 1.609344, 'Velocity'],
+    ['ms-kmh', 'm/s▶km/h', 3.6, 'Velocity'], ['kmh-ms', 'km/h▶m/s', 1 / 3.6, 'Velocity'],
+    ['atm-Pa', 'atm▶Pa', 101325, 'Pressure'], ['Pa-atm', 'Pa▶atm', 1 / 101325, 'Pressure'],
+    ['mmHg-Pa', 'mmHg▶Pa', 133.322387415, 'Pressure'], ['Pa-mmHg', 'Pa▶mmHg', 1 / 133.322387415, 'Pressure'],
+    ['kgfcm2-Pa', 'kgf/cm²▶Pa', 98066.5, 'Pressure'], ['Pa-kgfcm2', 'Pa▶kgf/cm²', 1 / 98066.5, 'Pressure'],
+    ['lbfin2-kPa', 'lbf/in²▶kPa', 6.894757293168, 'Pressure'], ['kPa-lbfin2', 'kPa▶lbf/in²', 1 / 6.894757293168, 'Pressure'],
+    ['cal-J', 'cal▶J', 4.184, 'Energy'], ['J-cal', 'J▶cal', 1 / 4.184, 'Energy'],
+    ['kgfm-J', 'kgf·m▶J', 9.80665, 'Energy'], ['J-kgfm', 'J▶kgf·m', 1 / 9.80665, 'Energy'],
+    ['hp-kW', 'hp▶kW', 0.745699872, 'Power'], ['kW-hp', 'kW▶hp', 1 / 0.745699872, 'Power'],
+    ['F-C', '°F▶°C', x => (x - 32) * 5 / 9, 'Temperature'], ['C-F', '°C▶°F', x => x * 9 / 5 + 32, 'Temperature'],
+    ['K-C', 'K▶°C', x => x - 273.15, 'Temperature'], ['C-K', '°C▶K', x => x + 273.15, 'Temperature']
   ];
-  CONV.forEach(([id, d, f]) => def('cv:' + id, d, 'post', { f: 'cv', conv: f }));
+  CONV.forEach(([id, d, f, category]) => def('cv:' + id, d, 'post', { f: 'cv', conv: f, category }));
 
   def('pi', 'π', 'const', { v: Math.PI });
   def('e', 'e', 'const', { v: Math.E });
@@ -76,26 +83,62 @@
   def('PreAns', 'PreAns', 'const');
   def('Ran#', 'Ran#', 'const');
 
-  // Physical constants (CODATA 2018)
+  // Physical constants (CODATA 2018) grouped like the fx-991ES reference sheet.
   const CONSTS = [
-    ['c', 'c₀', 'speed of light', 299792458],
-    ['h', 'h', 'Planck constant', 6.62607015e-34],
-    ['G', 'G', 'gravitational const', 6.6743e-11],
-    ['qe', 'e⁻', 'elementary charge', 1.602176634e-19],
-    ['me', 'mₑ', 'electron mass', 9.1093837015e-31],
-    ['mp', 'mₚ', 'proton mass', 1.67262192369e-27],
-    ['mn', 'mₙ', 'neutron mass', 1.67492749804e-27],
-    ['NA', 'Nₐ', 'Avogadro constant', 6.02214076e23],
-    ['k', 'k', 'Boltzmann constant', 1.380649e-23],
-    ['R', 'R', 'molar gas constant', 8.314462618],
-    ['g', 'g', 'standard gravity', 9.80665],
-    ['e0', 'ε₀', 'vacuum permittivity', 8.8541878128e-12],
-    ['mu0', 'μ₀', 'vacuum permeability', 1.25663706212e-6],
-    ['F', 'F', 'Faraday constant', 96485.33212],
-    ['atm', 'atm', 'standard atmosphere', 101325],
-    ['sigma', 'σ', 'Stefan-Boltzmann', 5.670374419e-8]
+    // Universal
+    ['c', 'c₀', 'speed of light', 299792458, 'Universal'],
+    ['h', 'h', 'Planck constant', 6.62607015e-34, 'Universal'],
+    ['G', 'G', 'gravitational const', 6.6743e-11, 'Universal'],
+    ['e0', 'ε₀', 'vacuum permittivity', 8.8541878128e-12, 'Universal'],
+    ['mu0', 'μ₀', 'vacuum permeability', 1.25663706212e-6, 'Universal'],
+    ['Z0', 'Z₀', 'characteristic impedance', 376.730313668, 'Universal'],
+    ['tP', 'tₚ', 'Planck time', 5.391247e-44, 'Universal'],
+    ['lP', 'lₚ', 'Planck length', 1.616255e-35, 'Universal'],
+    // Electromagnetic
+    ['qe', 'e⁻', 'elementary charge', 1.602176634e-19, 'Electromagnetic'],
+    ['muN', 'μN', 'nuclear magneton', 5.0507837461e-27, 'Electromagnetic'],
+    ['Phi0', 'Φ₀', 'magnetic flux quantum', 2.067833848e-15, 'Electromagnetic'],
+    ['RK', 'Rₖ', 'von Klitzing constant', 25812.80745, 'Electromagnetic'],
+    ['muB', 'μB', 'Bohr magneton', 9.2740100783e-24, 'Electromagnetic'],
+    ['G0', 'G₀', 'conductance quantum', 7.748091729e-5, 'Electromagnetic'],
+    ['KJ', 'KJ', 'Josephson constant', 483597.8484e9, 'Electromagnetic'],
+    // Atomic & nuclear
+    ['me', 'mₑ', 'electron mass', 9.1093837015e-31, 'Atomic & nuclear'],
+    ['mp', 'mₚ', 'proton mass', 1.67262192369e-27, 'Atomic & nuclear'],
+    ['mn', 'mₙ', 'neutron mass', 1.67492749804e-27, 'Atomic & nuclear'],
+    ['mmu', 'mμ', 'muon mass', 1.883531627e-28, 'Atomic & nuclear'],
+    ['re', 'rₑ', 'classical electron radius', 2.8179403262e-15, 'Atomic & nuclear'],
+    ['lambdaCp', 'λCp', 'Compton wavelength proton', 1.32140985539e-15, 'Atomic & nuclear'],
+    ['mup', 'μp', 'proton magnetic moment', 1.41060679736e-26, 'Atomic & nuclear'],
+    ['mumu', 'μμ', 'muon magnetic moment', 4.49044830e-26, 'Atomic & nuclear'],
+    ['a0', 'a₀', 'Bohr radius', 5.29177210903e-11, 'Atomic & nuclear'],
+    ['lambdaC', 'λC', 'Compton wavelength electron', 2.42631023867e-12, 'Atomic & nuclear'],
+    ['lambdaCn', 'λCn', 'Compton wavelength neutron', 1.31959090581e-15, 'Atomic & nuclear'],
+    ['mue', 'μe', 'electron magnetic moment', -9.2847647043e-24, 'Atomic & nuclear'],
+    ['mtau', 'mτ', 'tau mass', 3.16754e-27, 'Atomic & nuclear'],
+    ['alpha', 'α', 'fine-structure constant', 7.2973525693e-3, 'Atomic & nuclear'],
+    ['gammap', 'γp', 'proton gyromagnetic ratio', 2.6752218744e8, 'Atomic & nuclear'],
+    ['Rinf', 'R∞', 'Rydberg constant', 10973731.568160, 'Atomic & nuclear'],
+    ['mun', 'μn', 'neutron magnetic moment', -9.6623651e-27, 'Atomic & nuclear'],
+    // Physico-chemical
+    ['NA', 'Nₐ', 'Avogadro constant', 6.02214076e23, 'Physico-chemical'],
+    ['k', 'k', 'Boltzmann constant', 1.380649e-23, 'Physico-chemical'],
+    ['R', 'R', 'molar gas constant', 8.314462618, 'Physico-chemical'],
+    ['F', 'F', 'Faraday constant', 96485.33212, 'Physico-chemical'],
+    ['sigma', 'σ', 'Stefan-Boltzmann', 5.670374419e-8, 'Physico-chemical'],
+    ['u', 'u', 'atomic mass constant', 1.66053906660e-27, 'Physico-chemical'],
+    ['c1', 'c₁', 'first radiation constant', 3.741771852e-16, 'Physico-chemical'],
+    ['Vm', 'Vm', 'molar volume ideal gas', 22.41396954e-3, 'Physico-chemical'],
+    ['c2', 'c₂', 'second radiation constant', 1.438776877e-2, 'Physico-chemical'],
+    // Adopted values
+    ['g', 'g', 'standard gravity', 9.80665, 'Adopted values'],
+    ['atm', 'atm', 'standard atmosphere', 101325, 'Adopted values'],
+    ['KJ90', 'KJ-90', 'Josephson constant 1990', 483597.9e9, 'Adopted values'],
+    ['RK90', 'RK-90', 'von Klitzing constant 1990', 25812.807, 'Adopted values'],
+    // Other
+    ['t', 't', 'Celsius temperature', 273.15, 'Other']
   ];
-  CONSTS.forEach(([id, d, name, v]) => def('k:' + id, d, 'const', { v, name }));
+  CONSTS.forEach(([id, d, name, v, category]) => def('k:' + id, d, 'const', { v, name, category }));
 
   // Complex / Matrix / Vector / Base-N tokens (evaluated by engine-x.js)
   def('i', 'i', 'const', { ext: true });
@@ -950,7 +993,11 @@
   }
   function stats1(xs, freq) {
     const pts = [];
-    xs.forEach((x, i) => { const f = freq ? freq[i] : 1; for (let k = 0; k < f; k++) pts.push(x); });
+    xs.forEach((x, i) => {
+      const f = freq ? (freq[i] === undefined ? 1 : freq[i]) : 1;
+      if (!isFinite(x) || !isFinite(f) || f <= 0) return;
+      for (let k = 0; k < Math.round(f); k++) pts.push(x);
+    });
     const n = pts.length;
     if (!n) return null;
     const sx = pts.reduce((a, b) => a + b, 0), sx2 = pts.reduce((a, b) => a + b * b, 0);
@@ -965,21 +1012,95 @@
       q3: n > 1 ? median(s.slice(n % 2 ? half + 1 : half)) : s[0], max: s[n - 1]
     };
   }
-  function stats2(xs, ys) {
-    const n = Math.min(xs.length, ys.length);
-    if (n < 1) return null;
-    let sx = 0, sy = 0, sx2 = 0, sy2 = 0, sxy = 0;
-    for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sx2 += xs[i] * xs[i]; sy2 += ys[i] * ys[i]; sxy += xs[i] * ys[i]; }
+  // Paired-variable statistics and regression. `type` is one of:
+  // lin, quad, log, exp, ab, pwr, inv (the fx-991ES regression models).
+  function stats2(xs, ys, freq, type) {
+    type = type || 'lin';
+    const pts = [];
+    const n0 = Math.min(xs.length, ys.length);
+    for (let i = 0; i < n0; i++) {
+      const f = freq ? (freq[i] === undefined ? 1 : freq[i]) : 1;
+      if (!isFinite(xs[i]) || !isFinite(ys[i]) || !isFinite(f) || f <= 0) continue;
+      pts.push({ x: xs[i], y: ys[i], f });
+    }
+    if (!pts.length) return null;
+    const w = fn => pts.reduce((s, p) => s + p.f * fn(p), 0);
+    const n = w(() => 1);
+    const sx = w(p => p.x), sy = w(p => p.y);
+    const sx2 = w(p => p.x * p.x), sy2 = w(p => p.y * p.y), sxy = w(p => p.x * p.y);
     const mx = sx / n, my = sy / n;
-    const Sxx = sx2 - n * mx * mx, Syy = sy2 - n * my * my, Sxy = sxy - n * mx * my;
-    const b = Sxx !== 0 ? Sxy / Sxx : NaN, a = my - b * mx;
-    const r = Sxx > 0 && Syy > 0 ? Sxy / Math.sqrt(Sxx * Syy) : NaN;
-    return {
-      n, mx, my, sx, sy, sx2, sy2, sxy,
+    const Sxx = sx2 - n * mx * mx, Syy = sy2 - n * my * my;
+    const out = {
+      n, type, mx, my, sx, sy, sx2, sy2, sxy,
       sigx: Math.sqrt(Math.max(0, Sxx) / n), sdx: n > 1 ? Math.sqrt(Math.max(0, Sxx) / (n - 1)) : NaN,
       sigy: Math.sqrt(Math.max(0, Syy) / n), sdy: n > 1 ? Math.sqrt(Math.max(0, Syy) / (n - 1)) : NaN,
-      a, b, r
+      a: NaN, b: NaN, c: NaN, r: NaN
     };
+
+    const line = (xsT, ysT) => {
+      const pairs = pts.map(p => ({ x: xsT(p), y: ysT(p), f: p.f }))
+        .filter(p => isFinite(p.x) && isFinite(p.y));
+      if (!pairs.length) return { a: NaN, b: NaN, r: NaN };
+      const sw = fn => pairs.reduce((s, p) => s + p.f * fn(p), 0);
+      const nn = sw(() => 1), x = sw(p => p.x), y = sw(p => p.y);
+      const xx = sw(p => p.x * p.x), yy = sw(p => p.y * p.y), xy = sw(p => p.x * p.y);
+      const den = nn * xx - x * x;
+      if (den === 0) return { a: NaN, b: NaN, r: NaN };
+      const b = (nn * xy - x * y) / den;
+      const a = (y - b * x) / nn;
+      const rDen = Math.sqrt((nn * xx - x * x) * (nn * yy - y * y));
+      return { a, b, r: rDen > 0 ? (nn * xy - x * y) / rDen : NaN };
+    };
+
+    const bad = () => Object.assign(out, { a: NaN, b: NaN, c: NaN, r: NaN });
+    switch (type) {
+      case 'lin': {
+        const f = line(p => p.x, p => p.y);
+        Object.assign(out, { a: f.a, b: f.b, r: f.r });
+        break;
+      }
+      case 'quad': {
+        const sx3 = w(p => p.x ** 3), sx4 = w(p => p.x ** 4), sx2y = w(p => p.x * p.x * p.y);
+        const sol = solveLinear([
+          [n, sx, sx2, sy],
+          [sx, sx2, sx3, sxy],
+          [sx2, sx3, sx4, sx2y]
+        ]);
+        if (sol.status !== 'ok') { bad(); break; }
+        const a = sol.x[0], b = sol.x[1], c = sol.x[2];
+        const sst = Syy;
+        const sse = w(p => (p.y - (a + b * p.x + c * p.x * p.x)) ** 2);
+        Object.assign(out, { a, b, c, r: sst > 0 ? Math.sqrt(Math.max(0, 1 - sse / sst)) : NaN });
+        break;
+      }
+      case 'log': {
+        const f = line(p => Math.log(p.x), p => p.y);
+        Object.assign(out, { a: f.a, b: f.b, r: f.r });
+        break;
+      }
+      case 'exp': {
+        const f = line(p => p.x, p => Math.log(p.y));
+        Object.assign(out, { a: Math.exp(f.a), b: f.b, r: f.r });
+        break;
+      }
+      case 'ab': {
+        const f = line(p => p.x, p => Math.log(p.y));
+        Object.assign(out, { a: Math.exp(f.a), b: Math.exp(f.b), r: f.r });
+        break;
+      }
+      case 'pwr': {
+        const f = line(p => Math.log(p.x), p => Math.log(p.y));
+        Object.assign(out, { a: Math.exp(f.a), b: f.b, r: f.r });
+        break;
+      }
+      case 'inv': {
+        const f = line(p => 1 / p.x, p => p.y);
+        Object.assign(out, { a: f.a, b: f.b, r: f.r });
+        break;
+      }
+      default: bad();
+    }
+    return out;
   }
 
   const api = {

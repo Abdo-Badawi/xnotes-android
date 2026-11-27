@@ -9,11 +9,11 @@
   // ------------------------------------------------------------ persistent state
   const STORE_KEY = 'fxcalc-v1';
   const freshVars = () => ({ A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, X: 0, Y: 0, M: 0 });
-  const defaultSettings = () => ({ io: 'math', angle: 'D', fmt: { t: 'norm', n: 1 }, frac: 'dc', haptic: true, input: 'math', zoom: 1 });
+  const defaultSettings = () => ({ io: 'math', angle: 'D', fmt: { t: 'norm', n: 1 }, frac: 'dc', haptic: true, input: 'math', zoom: 1, contrast: 5 });
   const S = {
     settings: defaultSettings(),
     vars: freshVars(), ans: 0, preAns: 0, history: [], mode: 'COMP',
-    stat: { type: '1', x: [], y: [] },
+    stat: { type: '1', x: [], y: [], freq: [], freqOn: false },
     table: { f: [], g: [], start: 1, end: 5, step: 1 },
     eqn: { kind: 'sim', n: 2, sim: {}, poly: {} },
     base: 'd', cfmt: 'rect', mats: {}, vcts: {}, matAns: null, vctAns: null, histX: {},
@@ -33,6 +33,12 @@
       EXTRA_KEYS.forEach(k => { if (saved[k] !== undefined && saved[k] !== null) S[k] = saved[k]; });
     }
   } catch (e) { /* storage unavailable */ }
+  // Older saves used type "2" for a paired variable table; the model is now a
+  // regression key ("lin", "quad", …), so normalise it on load.
+  if (S.stat.type === '2') S.stat.type = 'lin';
+  if (!Array.isArray(S.stat.freq)) S.stat.freq = [];
+  if (!Array.isArray(S.stat.x)) S.stat.x = [];
+  if (!Array.isArray(S.stat.y)) S.stat.y = [];
   function save() {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
@@ -187,6 +193,7 @@
       const r = this.res;
       let h = `<div class="input">${this.ed.html(this.phase === 'edit')}${r && r.stored && this.phase === 'result' ? '→' + r.stored : ''}</div>`;
       if (this.phase === 'result') h += this.resultHTML();
+      else if (this.ed.empty) h += '<div class="lines"><div class="result">0</div></div>';
       return h;
     }
     resultHTML() {
@@ -205,9 +212,7 @@
       const big = X.isM(r.value) || X.isV(r.value) || X.isC(r.value);
       const o = Object.assign({}, r, { surd2: this.ed.t.some(k => k === 'sqrt(' || k === 'xrt(' || k === 'cbrt(') });
       const main = valueHTML(r.value, o);
-      const dec = valueHTML(r.value, Object.assign({}, o, { decimal: true }));
-      const second = !r.decimal && main !== dec && r.eng === null && !r.dms ? `<div class="result2">= ${dec}</div>` : '';
-      return `<div class="lines"><div class="result ${big ? 'mid' : ''}">${main}</div>${second}</div>`;
+      return `<div class="lines"><div class="result ${big ? 'mid' : ''}">${main}</div></div>`;
     }
 
     showError(e) {
@@ -235,7 +240,7 @@
         const v = E.finalize(E.evaluate(node, ctx));
         setAns(v);
         this.pushHistory(v);
-        this.showResult(v, { multi: ctx.multi, decimal: decimal || S.settings.io === 'dec' });
+        this.showResult(v, { multi: ctx.multi, decimal: decimal || this.ed.t.includes('pct') || S.settings.io === 'dec' });
       } catch (e) { this.showError(e); }
     }
     evaluateX(decimal) {
@@ -252,7 +257,7 @@
         else if (X.isV(v)) S.vctAns = v;
         else setAns(v);
         this.pushHistory(v);
-        this.showResult(v, { decimal: decimal || S.settings.io === 'dec', cfmt: ctx.cfmt });
+        this.showResult(v, { decimal: decimal || this.ed.t.includes('pct') || S.settings.io === 'dec', cfmt: ctx.cfmt });
       } catch (e) { this.showError(e); }
     }
     // Value to use for STO / M+: current result, or evaluate what is typed.
@@ -521,11 +526,12 @@
     }
     html() {
       const dense = this.one && this.items.length >= 8 ? ' dense' : '';
-      return `<div class="title"><span>${this.title}</span><span class="hint">AC: back</span></div>` +
-        `<div class="menu ${this.one ? 'one' : ''}${dense}">` +
+      return `<div class="title"><span>${this.title}</span><span class="hint">AC/◀: back</span></div>` +
+        `<div class="menu ${this.one ? 'one' : ''}${dense}" role="listbox">` +
         this.items.map((it, i) => {
           const k = it.k !== undefined ? it.k : (i < 9 ? String(i + 1) : '');
-          return `<div class="it ${i === this.sel ? 'sel' : ''}" data-tap="${i}"><span class="lb">${k ? k + ':' : ''}${it.label}</span>${it.chk ? '<span class="chk">◂</span>' : ''}</div>`;
+          const label = it.label.replace(/<[^>]*>/g, '');
+          return `<div class="it ${i === this.sel ? 'sel' : ''}" data-tap="${i}" role="option" tabindex="0" aria-selected="${i === this.sel}" aria-label="${esc(k ? k + ': ' : '')}${esc(label)}"><span class="lb">${k ? k + ':' : ''}${it.label}</span>${it.chk ? '<span class="chk">◂</span>' : ''}</div>`;
         }).join('') + '</div>';
     }
     key(a) {
@@ -538,8 +544,11 @@
       }
       if (a === 'up') this.sel = (this.sel - cols + n * 2) % n;
       else if (a === 'down') this.sel = (this.sel + cols) % n;
-      else if (a === 'left' && cols > 1) this.sel = (this.sel - 1 + n) % n;
-      else if (a === 'right' && cols > 1) this.sel = (this.sel + 1) % n;
+      else if (a === 'left' && cols > 1) {
+        // On a sub-menu, ◀ at the first column returns to the parent (like Esc).
+        if (this.sel % 2 === 0) pop();
+        else this.sel = (this.sel - 1 + n) % n;
+      } else if (a === 'right' && cols > 1) this.sel = (this.sel + 1) % n;
       else if (a === 'exe') this.choose(this.sel);
       else if (a === 'ac' || a === 'del' || a === 'left') pop();
     }
@@ -554,8 +563,18 @@
       this.title = title; this.rows = rows; this.sel = opt.sel || 0; this.opt = opt;
     }
     html() {
-      return `<div class="title"><span>${this.title}</span><span class="hint">${this.opt.hint || 'AC: back'}</span></div><div class="list">` +
-        this.rows.map((r, i) => `<div class="row ${i === this.sel ? 'sel' : ''}" data-tap="${i}"><span>${r[0]}</span><span class="v">${r[1]}</span></div>`).join('') + '</div>';
+      const hint = this.stored ? '→ ' + this.stored : (this.opt.hint || 'AC: back');
+      return `<div class="title"><span>${this.title}</span><span class="hint">${hint}</span></div><div class="list" role="listbox">` +
+        this.rows.map((r, i) => `<div class="row ${i === this.sel ? 'sel' : ''}" data-tap="${i}" role="option" tabindex="0" aria-selected="${i === this.sel}"><span>${r[0]}</span><span class="v">${r[1]}</span></div>`).join('') + '</div>';
+    }
+    // STO from a result screen (Equation solutions, statistics, …).
+    store(name) {
+      const vals = this.opt.values;
+      const v = vals && vals[this.sel];
+      if (v === undefined || v === null || X.isM(v) || X.isV(v)) return false;
+      S.vars[name] = v;
+      this.stored = name;
+      return true;
     }
     key(a) {
       const n = this.rows.length;
@@ -563,6 +582,7 @@
       else if (a === 'down') this.sel = (this.sel + 1) % n;
       else if (a === 'exe' && this.opt.onExe) this.opt.onExe(this.sel);
       else if (a === 'ac' || a === 'del' || a === 'left') { pop(); if (this.opt.onClose) this.opt.onClose(); }
+      else if (a === 'sd' && this.opt.onSD) this.opt.onSD(this);
       else if (a.startsWith('ins:') && this.opt.onKey) this.opt.onKey(a);
     }
     tap(i) { this.sel = +i; if (this.opt.onExe) this.opt.onExe(this.sel); }
@@ -655,53 +675,89 @@
   }
 
   // ------------------------------------------------------------ Statistics mode
-  function statGrid() {
+  const STAT_TYPES = [
+    ['1', '1-Variable'],
+    ['lin', 'y=a+bx'],
+    ['quad', 'y=a+bx+cx²'],
+    ['log', 'y=a+b·ln x'],
+    ['exp', 'y=a·e^(bx)'],
+    ['ab', 'y=a·b^x'],
+    ['pwr', 'y=a·x^b'],
+    ['inv', 'y=a+b/x']
+  ];
+  const statModelLabel = t => (STAT_TYPES.find(x => x[0] === t) || STAT_TYPES[1])[1];
+  function ensureStatFreq() {
     const st = S.stat;
-    const two = st.type === '2';
+    while (st.freq.length < st.x.length) st.freq.push(1);
+    for (let i = 0; i < st.x.length; i++) if (st.freq[i] === undefined || st.freq[i] === null) st.freq[i] = 1;
+  }
+  function statGrid() {
+    const st = S.stat, two = st.type !== '1';
+    if (st.freqOn) ensureStatFreq();
+    const cols = two ? ['x', 'y'] : ['x'];
+    if (st.freqOn) cols.push('Freq');
+    const fi = two ? 2 : 1;
     return new GridScreen({
-      title: two ? 'Statistics  y=a+bx' : 'Statistics  1-Variable',
+      title: 'Statistics  ' + statModelLabel(st.type),
       hint: 'OPTN: menu  AC: results',
-      cols: two ? ['x', 'y'] : ['x'],
+      cols,
       appendable: true, dir: 'down',
       rows: () => st.x.length,
-      get: (r, c) => (c === 0 ? st.x[r] : st.y[r]),
-      set: (r, c, v) => {
-        if (r >= st.x.length) { st.x.push(0); st.y.push(0); }
-        if (c === 0) st.x[r] = v; else st.y[r] = v;
+      get: (r, c) => {
+        if (c === 0) return st.x[r];
+        if (two && c === 1) return st.y[r];
+        if (st.freqOn && c === fi) return st.freq[r] === undefined ? 1 : st.freq[r];
+        return '';
       },
-      onDelRow: r => { st.x.splice(r, 1); st.y.splice(r, 1); },
+      set: (r, c, v) => {
+        if (r >= st.x.length) { st.x.push(0); st.y.push(0); st.freq.push(1); }
+        if (c === 0) st.x[r] = v;
+        else if (two && c === 1) st.y[r] = v;
+        else st.freq[r] = v;
+      },
+      onDelRow: r => { st.x.splice(r, 1); st.y.splice(r, 1); st.freq.splice(r, 1); },
       onAC: () => showStatResults(),
       onOptn: () => push(new MenuScreen('OPTN', [
         { label: 'Select Type', act: () => { pop(); push(statTypeMenu()); } },
         { label: two ? 'Regression Calc' : '1-Variable Calc', act: () => { pop(); showStatResults(); } },
-        { label: 'Clear Data', act: () => { st.x = []; st.y = []; pop(); setBase(statGrid()); save(); } }
+        { label: 'Frequency: ' + (st.freqOn ? 'On' : 'Off'), act: () => { st.freqOn = !st.freqOn; if (st.freqOn) ensureStatFreq(); pop(); setBase(statGrid()); save(); } },
+        { label: 'Clear Data', act: () => { st.x = []; st.y = []; st.freq = []; pop(); setBase(statGrid()); save(); } }
       ], { one: true })),
       footHint: 'DEL: delete row'
     });
   }
   function statTypeMenu() {
-    return new MenuScreen('Statistics: Select Type', [
-      { label: '1-Variable', act: () => { S.stat.type = '1'; pop(); setBase(statGrid()); } },
-      { label: 'y=a+bx', act: () => { S.stat.type = '2'; pop(); setBase(statGrid()); } }
-    ], { one: true, sel: S.stat.type === '2' ? 1 : 0 });
+    return new MenuScreen('Statistics: Select Type', STAT_TYPES.map(([key, label]) => ({
+      label,
+      chk: key === S.stat.type,
+      act: () => { S.stat.type = key; pop(); setBase(statGrid()); save(); }
+    })), { one: false, sel: Math.max(0, STAT_TYPES.findIndex(t => t[0] === S.stat.type)) });
   }
   function showStatResults() {
     const st = S.stat, d = o => numHTML(o, { decimal: true });
-    let rows;
-    if (st.type === '2') {
-      const r = E.stats2(st.x, st.y);
+    const freq = st.freqOn ? st.freq : null;
+    if (st.type !== '1') {
+      let r;
+      try { r = E.stats2(st.x, st.y, freq, st.type); } catch (e) { push(new ListScreen('Regression', [[errType(e), '']])); return; }
       if (!r) { push(new ListScreen('Regression', [['No data', '']])); return; }
-      rows = [['n', d(r.n)], ['x̄', d(r.mx)], ['ȳ', d(r.my)], ['Σx', d(r.sx)], ['Σy', d(r.sy)], ['Σx²', d(r.sx2)],
-        ['Σy²', d(r.sy2)], ['Σxy', d(r.sxy)], ['σx', d(r.sigx)], ['sx', d(r.sdx)], ['σy', d(r.sigy)], ['sy', d(r.sdy)],
-        ['a', d(r.a)], ['b', d(r.b)], ['r', d(r.r)]];
-      rows = rows.map(([k, v]) => [k, v.indexOf('NaN') >= 0 ? 'ERROR' : v]);
-      push(new ListScreen('y=a+bx  ▲▼', rows));
+      const rows = [], values = [];
+      const add = (label, v) => { rows.push([label, typeof v === 'number' && isFinite(v) ? d(v) : 'ERROR']); values.push(typeof v === 'number' && isFinite(v) ? v : null); };
+      add('n', r.n); add('x̄', r.mx); add('ȳ', r.my);
+      add('Σx', r.sx); add('Σy', r.sy); add('Σx²', r.sx2); add('Σy²', r.sy2); add('Σxy', r.sxy);
+      add('σx', r.sigx); add('sx', r.sdx); add('σy', r.sigy); add('sy', r.sdy);
+      add('a', r.a); add('b', r.b);
+      if (st.type === 'quad') add('c', r.c);
+      add('r', r.r);
+      push(new ListScreen(statModelLabel(st.type) + '  ▲▼', rows, { values }));
     } else {
-      const r = E.stats1(st.x);
+      const r = E.stats1(st.x, freq);
       if (!r) { push(new ListScreen('1-Variable', [['No data', '']])); return; }
-      rows = [['n', d(r.n)], ['x̄', d(r.mean)], ['Σx', d(r.sum)], ['Σx²', d(r.sum2)], ['σ²x', d(r.sigma2)], ['σx', d(r.sigma)],
-        ['sx', isNaN(r.s) ? 'ERROR' : d(r.s)], ['min(x)', d(r.min)], ['Q₁', d(r.q1)], ['Med', d(r.med)], ['Q₃', d(r.q3)], ['max(x)', d(r.max)]];
-      push(new ListScreen('1-Variable  ▲▼', rows));
+      const rows = [], values = [];
+      const add = (label, v) => { rows.push([label, typeof v === 'number' && isFinite(v) ? d(v) : 'ERROR']); values.push(typeof v === 'number' && isFinite(v) ? v : null); };
+      add('n', r.n); add('x̄', r.mean); add('Σx', r.sum); add('Σx²', r.sum2);
+      add('σ²x', r.sigma2); add('σx', r.sigma); add('sx', r.s);
+      add('min(x)', r.min); add('Q₁', r.q1); add('Med', r.med); add('Q₃', r.q3); add('max(x)', r.max);
+      push(new ListScreen('1-Variable  ▲▼', rows, { values }));
     }
   }
 
@@ -818,15 +874,16 @@
     const ex = E.quadExact(c[0], c[1], c[2]);
     if (!ex) return null;
     const shown = ex.map(r => {
-      if (r.real !== undefined) return { v: r.real, h: numHTML(E.round15(r.real)) };
+      if (r.real !== undefined) return { v: r.real, value: r.real, h: numHTML(E.round15(r.real)) };
       if (r.complex) {
         const g = E.gcd(Math.abs(r.B), r.C);
         const im = exactHTML({ t: 'surd', s: 1, k: Math.abs(r.B) / g, m: r.m, d: r.C / g });
         const re = r.A === 0 ? '' : numHTML(r.A / r.C) + (r.B < 0 ? ` ${MINUS} ` : ' + ');
-        return { v: r.A / r.C, im: r.B, h: re + (r.A === 0 && r.B < 0 ? MINUS : '') + im + '<i>i</i>' };
+        return { v: r.A / r.C, im: r.B, value: X.cx(r.A / r.C, r.B * Math.sqrt(r.m) / r.C), h: re + (r.A === 0 && r.B < 0 ? MINUS : '') + im + '<i>i</i>' };
       }
       const top = (r.A !== 0 ? r.A : '') + (r.B < 0 ? MINUS : (r.A !== 0 ? '+' : '')) + surdHTML(Math.abs(r.B), r.m);
-      return { v: (r.A + r.B * Math.sqrt(r.m)) / r.C, h: neg(r.C > 1 ? fr(top, r.C) : top) };
+      const value = (r.A + r.B * Math.sqrt(r.m)) / r.C;
+      return { v: value, value, h: neg(r.C > 1 ? fr(top, r.C) : top) };
     });
     if (!shown[0].im) shown.sort((x, y) => y.v - x.v);
     return shown;
@@ -834,12 +891,15 @@
 
   function solveEqn() {
     const q = S.eqn, M = eqnMatrix();
-    let rows = [];
+    let rows = [], values = [];
     if (q.kind === 'sim') {
       const res = E.solveLinear(M);
       if (res.status === 'none') rows = [['No Solution', '']];
       else if (res.status === 'inf') rows = [['Infinite Solution', '']];
-      else rows = res.x.map((v, i) => [['x', 'y', 'z', 't'][i] + '=', numHTML(E.round15(v), { mixed: S.settings.frac === 'abc', decimal: S.settings.io === 'dec' })]);
+      else {
+        values = res.x.map(v => E.round15(v));
+        rows = res.x.map((v, i) => [['x', 'y', 'z', 't'][i] + '=', numHTML(E.round15(v), { mixed: S.settings.frac === 'abc', decimal: S.settings.io === 'dec' })]);
+      }
     } else {
       const c = M[0].slice();
       if (c[0] === 0) { push(new ListScreen('Polynomial', [['Math ERROR', 'a ≠ 0 required']])); return; }
@@ -847,16 +907,21 @@
       let shown = deg === 2 ? quadRootsHTML(c) : null;
       if (!shown) {
         const roots = E.polyRoots(c).sort((a, b) => (a.im === 0) !== (b.im === 0) ? (a.im === 0 ? -1 : 1) : (b.re - a.re) || (b.im - a.im));
-        shown = roots.map(r => ({ h: complexHTML(E.round15(r.re), E.round15(r.im), { decimal: S.settings.io === 'dec' || r.im !== 0 }) }));
+        shown = roots.map(r => ({
+          h: complexHTML(E.round15(r.re), E.round15(r.im), { decimal: S.settings.io === 'dec' || r.im !== 0 }),
+          value: r.im === 0 ? E.round15(r.re) : X.cx(E.round15(r.re), E.round15(r.im))
+        }));
       }
       rows = shown.map((s, i) => [`x${SUB[i]}=`, s.h]);
+      values = shown.map(s => s.value !== undefined ? s.value : null);
       if (deg === 2) {
         const xv = -c[1] / (2 * c[0]), yv = c[2] - c[1] * c[1] / (4 * c[0]);
         const kind = c[0] > 0 ? 'Minimum' : 'Maximum';
         rows.push([`x-Value ${kind}=`, numHTML(E.round15(xv))], [`y-Value ${kind}=`, numHTML(E.round15(yv))]);
+        values.push(E.round15(xv), E.round15(yv));
       }
     }
-    push(new ListScreen('Solution  ▲▼', rows, { hint: 'AC: edit' }));
+    push(new ListScreen('Solution  ▲▼', rows, { hint: 'AC: edit  STO: store', values }));
   }
 
   // ------------------------------------------------------------ Matrix / Vector definitions
@@ -1082,17 +1147,19 @@
     }
     save();
   }
+  // The eight modes of the fx-991ES/ES PLUS. Distribution, Inequality and
+  // Ratio are still implemented in the engine, but they are not part of the
+  // ES mode menu.
   const MODES = [
-    ['COMP', 'Calculate', ''], ['CMPLX', 'Complex', 'CMPLX'], ['BASE', 'Base-N', 'BASE'], ['MATRIX', 'Matrix', 'MAT'],
-    ['VECTOR', 'Vector', 'VCT'], ['STAT', 'Statistics', 'STAT'], ['DIST', 'Distribution', 'DIST'], ['TABLE', 'Table', 'TABLE'],
-    ['EQN', 'Equation', 'EQN'], ['INEQ', 'Inequality', 'INEQ'], ['RATIO', 'Ratio', 'RATIO']
+    ['COMP', 'Calculate', ''], ['CMPLX', 'Complex', 'CMPLX'], ['STAT', 'Statistics', 'STAT'],
+    ['BASE', 'Base-N', 'BASE'], ['EQN', 'Equation', 'EQN'], ['MATRIX', 'Matrix', 'MAT'],
+    ['TABLE', 'Table', 'TABLE'], ['VECTOR', 'Vector', 'VCT']
   ];
-  const MODE_LABEL = Object.fromEntries(MODES.map(([m, , l]) => [m, l]));
 
   function openModeMenu() {
     if (top().isModeMenu) { pop(); return; }
     while (U.stack.length > 1) U.stack.pop();
-    const m = new MenuScreen('MENU', MODES.map(([mode, label], i) => ({
+    const m = new MenuScreen('MODE', MODES.map(([mode, label], i) => ({
       label, k: i < 9 ? String(i + 1) : '', act: () => setMode(mode)
     })), { one: false, sel: MODES.findIndex(x => x[0] === S.mode) });
     m.isModeMenu = true;
@@ -1125,6 +1192,8 @@
       ], { one: true })) },
       { label: 'Complex Result: ' + (S.cfmt === 'polar' ? 'r∠θ' : 'a+bi'), act: () => push(choice('Complex Result', [['a+bi', 'rect'], ['r∠θ', 'polar']], S.cfmt, v => { S.cfmt = v; })) },
       { label: 'Fraction Result: ' + (st.frac === 'abc' ? 'ab/c' : 'd/c'), act: () => push(choice('Fraction Result', [['ab/c (mixed)', 'abc'], ['d/c (improper)', 'dc']], st.frac, v => { st.frac = v; })) },
+      { label: 'Statistics: Freq ' + (S.stat.freqOn ? 'On' : 'Off'), act: () => push(choice('Statistics Freq', [['Freq On', true], ['Freq Off', false]], S.stat.freqOn, v => { S.stat.freqOn = v; if (v) ensureStatFreq(); })) },
+      { label: 'Display: Contrast ' + (st.contrast || 5), act: () => push(digitsMenu('Contrast', 1, 9, d => { st.contrast = d; })) },
       { label: 'Key Haptics: ' + (st.haptic ? 'On' : 'Off'), act: () => push(choice('Key Haptics', [['On', true], ['Off', false]], st.haptic, v => { st.haptic = v; })) },
       { label: 'Help (key guide)', act: () => { pop(); openHelp(); } },
       { label: 'Reset…', act: () => { pop(); openReset(); } }
@@ -1142,7 +1211,7 @@
       { label: 'Matrices & Vectors', act: () => confirm('Matrices & Vectors', () => { S.mats = {}; S.vcts = {}; S.matAns = null; S.vctAns = null; }) },
       { label: 'Initialize All', act: () => confirm('Everything', () => {
         S.settings = defaultSettings(); S.vars = freshVars(); S.ans = 0; S.preAns = 0; S.history = [];
-        S.stat = { type: '1', x: [], y: [] }; S.table = { f: [], g: [], start: 1, end: 5, step: 1 }; S.eqn = { kind: 'sim', n: 2, sim: {}, poly: {} };
+        S.stat = { type: '1', x: [], y: [], freq: [], freqOn: false }; S.table = { f: [], g: [], start: 1, end: 5, step: 1 }; S.eqn = { kind: 'sim', n: 2, sim: {}, poly: {} };
         S.base = 'd'; S.cfmt = 'rect'; S.mats = {}; S.vcts = {}; S.matAns = null; S.vctAns = null; S.histX = {};
         S.dist = {}; S.ineq = { n: 2, op: '>', coef: {} }; S.ratio = { kind: 'x3', vals: [1, 2, 1] };
         U.comp = null; U.cx = {}; S.mode = 'COMP'; U.stack = [makeBase('COMP')];
@@ -1159,13 +1228,21 @@
   const tokItems = keys => keys.map(k => ({ label: esc(TOK[k].disp), act: () => insertTok(k) }));
 
   function openConst() {
-    push(new MenuScreen('CONSTANT', E.CONSTS.map(([id, d, name]) => ({
-      label: `${esc(d)}  <span class="hint">${name}</span>`, act: () => insertTok('k:' + id)
-    })), { one: true }));
+    const cats = [...new Set(E.CONSTS.map(c => c[4]))];
+    push(new MenuScreen('CONSTANT', cats.map(cat => ({
+      label: cat,
+      act: () => push(new MenuScreen('CONSTANT  ' + cat, E.CONSTS.filter(c => c[4] === cat).map(([id, d, name]) => ({
+        label: `${esc(d)}  <span class="hint">${name}</span>`, act: () => insertTok('k:' + id)
+      })), { one: true }))
+    })), { one: false }));
   }
   function openConv() {
-    push(new MenuScreen('CONVERSION (applies to value before it)', E.CONV.map(([id, d]) => ({
-      label: esc(d), act: () => insertTok('cv:' + id)
+    const cats = [...new Set(E.CONV.map(c => c[3]))];
+    push(new MenuScreen('CONVERSION', cats.map(cat => ({
+      label: cat,
+      act: () => push(new MenuScreen('CONVERSION  ' + cat, E.CONV.filter(c => c[3] === cat).map(([id, d]) => ({
+        label: esc(d), act: () => insertTok('cv:' + id)
+      })), { one: false }))
     })), { one: false }));
   }
   function openCatalog() {
@@ -1201,8 +1278,8 @@
   }
   function openHelp() {
     const rows = [
-      ['SHIFT / ALPHA', 'gold / pink labels'],
-      ['a/b key', 'fraction: 3/4'],
+      ['SHIFT / ALPHA', 'orange / red labels'],
+      ['a/b key', '3 a/b 4 gives 3/4'],
       ['S⇔D', 'exact ⇔ decimal'],
       ['SHIFT =', 'decimal result'],
       ['▲ ▼', 'previous calculations'],
@@ -1215,7 +1292,7 @@
       ['∫(f,a,b)', 'integral, use x'],
       ['d/dx(f,a)', 'derivative at a'],
       ['Σ(f,a,b)', 'sum for x=a…b'],
-      ['MENU', 'all 11 modes'],
+      ['MODE', 'all 8 ES modes'],
       ['OPTN', 'functions for the current mode'],
       ['Complex: ENG key', 'types i'],
       ['Base-N: x² x^ log ln', 'DEC / HEX / BIN / OCT'],
@@ -1223,10 +1300,11 @@
       ['Matrix/Vector: OPTN', 'define, edit, insert'],
       ['Matrix x⁻¹ / x²', 'inverse / square'],
       ['Vector × Vector', 'cross product'],
-      ['⚙ key', 'settings (Deg/Rad…)'],
-      ['SHIFT ⚙', 'CATALOG of every function'],
-      ['Toolbar chips', 'tap DEG / FRAC / NORM to change'],
-      ['Fraction key', 'stacked fraction, ▼ to denominator'],
+      ['SHIFT MODE', 'SETUP (Deg/Rad, contrast…)'],
+      ['SHIFT ON', 'CATALOG of every function'],
+      ['Status line', 'tap D / MathO / Norm to change'],
+      ['Fraction key', 'stacked fraction; ▼ to denominator'],
+      ['STAT OPTN', 'frequency and regression type'],
       ['°′″ key', 'DMS input; on result: convert'],
       ['SHIFT °′″', 'prime factorization'],
       ['SHIFT 7 / 8', 'constants / conversions'],
@@ -1243,8 +1321,8 @@
   const K = {
     shift: { l: 'SHIFT', a: 'shift', c: 'shiftk sm' },
     alpha: { l: 'ALPHA', a: 'alpha', c: 'alphak sm' },
-    menu: { l: 'MENU', a: 'menu', c: 'sm' },
-    setup: { l: '<svg viewBox="0 0 24 24" width="1.25em" height="1.25em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>', a: 'setup', s: ['CATALOG', 'catalog'], c: 'sm' },
+    menu: { l: 'MODE', a: 'menu', s: ['SETUP', 'setup'], c: 'sm' },
+    setup: { l: 'ON', a: 'on', s: ['CATALOG', 'catalog'], c: 'sm' },
     optn: { l: 'OPTN', a: 'optn', c: 'sm' },
     calc: { l: 'CALC', a: 'calc', s: ['SOLVE', 'solve'], al: ['=', 'ins:='], c: 'sm' },
     integ: { l: `<span class="fi">∫</span><span class="lims">${SBOX}${SBOX}</span>${BOX}`, a: 'ins:integ(', s: [`<span class="dd">d/d<i>x</i></span>${SBOX}`, 'ins:deriv('] },
@@ -1308,12 +1386,23 @@
     ['n0', 'dot', 'exp', 'ans', 'exe']
   ];
 
+  const KEY_ARIA = {
+    shift: 'SHIFT', alpha: 'ALPHA', menu: 'MODE', setup: 'ON', optn: 'OPTN', calc: 'CALC',
+    integ: 'integral', x: 'variable x', frac: 'fraction', sqrt: 'square root', sq: 'x squared',
+    pow: 'power', log: 'logarithm', ln: 'natural logarithm', neg: 'negative', dms: 'degrees minutes seconds',
+    inv: 'reciprocal', sin: 'sine', cos: 'cosine', tan: 'tangent', sto: 'store', eng: 'engineering notation',
+    lp: 'open parenthesis', rp: 'close parenthesis', sd: 'exact decimal toggle', mplus: 'M plus',
+    n7: '7', n8: '8', n9: '9', del: 'delete', ac: 'all clear', n4: '4', n5: '5', n6: '6',
+    mul: 'multiply', div: 'divide', n1: '1', n2: '2', n3: '3', add: 'plus', sub: 'minus',
+    n0: '0', dot: 'decimal point', exp: 'times ten to the power', ans: 'answer', exe: 'equals'
+  };
   function keyCell(id) {
     const k = K[id];
     const cell = document.createElement('div');
     cell.className = 'kc';
+    const label = KEY_ARIA[id] || k.l.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || id;
     cell.innerHTML = `<div class="kl"><span class="s">${k.s ? k.s[0] : ''}</span><span class="a">${k.al ? k.al[0] : ''}</span></div>` +
-      `<button class="k ${k.c || ''}" data-k="${id}" aria-label="${id}">${k.l}</button>`;
+      `<button class="k ${k.c || ''}" data-k="${id}" aria-label="${esc(label)}">${k.l}</button>`;
     return cell;
   }
   function buildKeys() {
@@ -1324,10 +1413,10 @@
     const dpad = document.createElement('div');
     dpad.className = 'dpad';
     const chev = d => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
-    dpad.innerHTML = `<button class="up" data-nav="up" aria-label="up">${chev('M6 15l6-6 6 6')}</button>` +
-      `<button class="dn" data-nav="down" aria-label="down">${chev('M6 9l6 6 6-6')}</button>` +
-      `<button class="lf" data-nav="left" aria-label="left">${chev('M15 6l-6 6 6 6')}</button>` +
-      `<button class="rt" data-nav="right" aria-label="right">${chev('M9 6l6 6-6 6')}</button><div class="hub"></div>`;
+    dpad.innerHTML = `<button class="up" data-nav="up" aria-label="cursor up">${chev('M6 15l6-6 6 6')}</button>` +
+      `<button class="dn" data-nav="down" aria-label="cursor down">${chev('M6 9l6 6 6-6')}</button>` +
+      `<button class="lf" data-nav="left" aria-label="cursor left">${chev('M15 6l-6 6 6 6')}</button>` +
+      `<button class="rt" data-nav="right" aria-label="cursor right">${chev('M9 6l6 6-6 6')}</button><div class="hub"></div>`;
     topBlock.appendChild(dpad);
     ['menu', 'setup', 'optn', 'calc', 'integ', 'x'].forEach(id => topBlock.appendChild(keyCell(id)));
     keys.appendChild(topBlock);
@@ -1375,6 +1464,7 @@
     switch (act) {
       case 'menu': openModeMenu(); break;
       case 'setup': openSetup(); break;
+      case 'on': U.shift = U.alpha = U.sto = false; break;
       case 'reset': openReset(); break;
       case 'catalog': openCatalog(); break;
       case 'help': openHelp(); break;
@@ -1393,9 +1483,6 @@
       case 'angle': S.settings.angle = { D: 'R', R: 'G', G: 'D' }[S.settings.angle]; break;
       case 'io': S.settings.io = S.settings.io === 'math' ? 'dec' : 'math'; if (top().res) top().res.decimal = S.settings.io === 'dec'; break;
       case 'fmt': openSetup(); top().choose(3); break;
-      case 'zoomin': case 'zoomout':
-        S.settings.zoom = Math.max(0.7, Math.min(1.6, +(S.settings.zoom + (act === 'zoomin' ? 0.1 : -0.1)).toFixed(1)));
-        break;
       default:
         if (act && act.startsWith('mode:')) { setMode(act.slice(5)); break; }
         if (act) top().key(act);
@@ -1404,36 +1491,29 @@
   }
   function afterAction() { render(); save(); }
 
-  const ICON = {
-    zoomout: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M8 10.5h5M15.5 15.5 20 20"/></svg>',
-    zoomin: '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M8 10.5h5M10.5 8v5M15.5 15.5 20 20"/></svg>',
-    undo: '<svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/></svg>',
-    redo: '<svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M20 12H9a5 5 0 0 0 0 10h2"/></svg>'
-  };
   function render() {
     const st = S.settings;
-    const chip = (act, txt, cls) => `<button class="chip ${cls || ''}" data-act="${act}">${txt}</button>`;
-    const fmt = st.fmt.t === 'norm' ? 'NORM' : st.fmt.t.toUpperCase() + ' ' + st.fmt.n;
-    const t = top(), canUndo = !!(t.undoStack && t.undoStack.length), canRedo = !!(t.redoStack && t.redoStack.length);
-    $('#status').innerHTML =
-      chip('angle', { D: 'DEG', R: 'RAD', G: 'GRA' }[st.angle], 'pill') +
-      chip('io', st.io === 'math' ? 'FRAC' : 'DECI', 'pill') +
-      (U.shift ? '<span class="badge s">S</span>' : '') + (U.alpha ? '<span class="badge a">A</span>' : '') +
-      (U.sto ? '<span class="badge sto">STO</span>' : '') +
-      chip('fmt', fmt, 'plain') +
-      (S.vars.M !== 0 && typeof S.vars.M === 'number' ? '<span class="flag">M</span>' : '') +
-      (S.mode === 'BASE' ? `<span class="flag">${BASE_NAME[S.base].toUpperCase()}</span>` : '') +
-      (MODE_LABEL[S.mode] ? `<span class="flag">${MODE_LABEL[S.mode]}</span>` : '') +
-      '<span class="grow"></span>' +
-      chip('zoomout', ICON.zoomout, 'icon') + chip('zoomin', ICON.zoomin, 'icon') +
-      chip('undo', ICON.undo, 'icon' + (canUndo ? '' : ' dim')) + chip('redo', ICON.redo, 'icon' + (canRedo ? '' : ' dim'));
+    const fmt = (st.fmt.t === 'norm' ? 'Norm' : st.fmt.t === 'fix' ? 'Fix' : 'Sci') + st.fmt.n;
+    const angle = { D: 'D', R: 'R', G: 'G' }[st.angle];
+    const stp = (on, txt, act) => `<span class="st${on ? ' on' : ''}"${act ? ` data-act="${act}"` : ''}>${txt}</span>`;
+    $('#lcd-status').innerHTML =
+      (U.shift ? stp(true, 'S') : '') + (U.alpha ? stp(true, 'A') : '') + (U.sto ? stp(true, 'STO') : '') +
+      (typeof S.vars.M === 'number' && S.vars.M !== 0 ? stp(true, 'M') : '') +
+      stp(st.input === 'math', st.input === 'line' ? 'Line' : 'Math') +
+      '<span class="st grow"></span>' +
+      stp(true, angle, 'angle') +
+      stp(true, st.io === 'math' ? 'MathO' : 'DecO', 'io') +
+      stp(true, fmt, 'fmt') +
+      (S.mode === 'BASE' ? stp(true, BASE_NAME[S.base].toUpperCase()) : '');
+    document.documentElement.style.setProperty('--zoom', 1);
+    document.documentElement.style.setProperty('--lcd-brightness', Math.max(0.72, Math.min(1.2, 0.66 + (st.contrast || 5) * 0.068)).toFixed(2));
     document.body.classList.toggle('mod-shift', U.shift);
     document.body.classList.toggle('mod-alpha', U.alpha);
-    document.documentElement.style.setProperty('--zoom', st.zoom || 1);
     const scr = $('#screen');
     scr.innerHTML = top().html();
     const focus = scr.querySelector('.cur') || scr.querySelector('.sel');
     if (focus) focus.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    scr.querySelectorAll('.result, .result2').forEach(el => { el.scrollLeft = el.scrollWidth; });
     OVERRIDDEN.forEach(id => {
       const b = document.querySelector(`.k[data-k="${id}"]`);
       const ov = MODE_KEYS[S.mode] && MODE_KEYS[S.mode][id];
@@ -1465,7 +1545,7 @@
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => document.addEventListener(ev, stop));
     document.addEventListener('contextmenu', e => e.preventDefault());
 
-    $('#status').addEventListener('pointerdown', e => {
+    $('#lcd-status').addEventListener('pointerdown', e => {
       const b = e.target.closest('[data-act]');
       if (!b) return;
       e.preventDefault();
@@ -1499,7 +1579,7 @@
   // Some Android WebViews resolve viewport units (vh) to 0. Derive the display height
   // from innerHeight in pixels so the LCD always has a visible, size-appropriate height.
   function syncLcdHeight() {
-    const h = Math.max(110, Math.min(290, Math.round((window.innerHeight || 0) * 0.28)));
+    const h = Math.max(140, Math.min(250, Math.round((window.innerHeight || 0) * 0.24)));
     document.documentElement.style.setProperty('--lcd-height', h + 'px');
   }
   syncLcdHeight();

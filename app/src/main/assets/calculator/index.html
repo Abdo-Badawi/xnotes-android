@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>fx Calc</title>
-<meta name="description" content="Offline Casio-style scientific calculator">
-<meta name="theme-color" content="#111317">
+<meta name="description" content="Offline Casio fx-991ES-style scientific calculator">
+<meta name="theme-color" content="#1b1c1f">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,12 +18,12 @@
 <body>
 <div id="app">
   <div id="lcd">
+    <div id="lcd-status" aria-hidden="true"></div>
     <div id="screen"></div>
   </div>
-  <div id="status"></div>
   <div id="keys"></div>
 </div>
-<label id="haptic" aria-hidden="true"><input type="checkbox" switch></label>
+<label id="haptic" aria-hidden="true"><input type="checkbox" switch tabindex="-1" aria-hidden="true"></label>
 <script src="engine.js"></script>
 <script src="engine-x.js"></script>
 <script src="editor.js"></script>

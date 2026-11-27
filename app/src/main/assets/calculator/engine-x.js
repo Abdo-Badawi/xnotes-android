@@ -60,6 +60,32 @@
     return cexp(cmul(b, cln(a, p)));
   }
   const conj = z => cx(RE(z), -IM(z));
+  const csin = z => cx(Math.sin(RE(z)) * Math.cosh(IM(z)), Math.cos(RE(z)) * Math.sinh(IM(z)));
+  const ccos = z => cx(Math.cos(RE(z)) * Math.cosh(IM(z)), -Math.sin(RE(z)) * Math.sinh(IM(z)));
+  function casin(z, p) {
+    const iz = cx(-IM(z), RE(z));
+    const w = cln(cadd(iz, csqrt(csub(1, cmul(z, z)))), p);
+    return cx(IM(w), -RE(w));
+  }
+  function cacos(z, p) {
+    const a = casin(z, p);
+    return cx(Math.PI / 2 - RE(a), -IM(a));
+  }
+  function catan(z, p) {
+    const iz = cx(-IM(z), RE(z));
+    const l = cln(cdiv(cadd(1, iz), csub(1, iz), p), p);
+    return cx(IM(l) / 2, -RE(l) / 2);
+  }
+  function casinh(z, p) { return cln(cadd(z, csqrt(cadd(cmul(z, z), 1))), p); }
+  function cacosh(z, p) {
+    return cln(cadd(z, cmul(csqrt(csub(z, 1)), csqrt(cadd(z, 1)))), p);
+  }
+  function catanh(z, p) {
+    const l = cln(cdiv(cadd(1, z), csub(1, z), p), p);
+    return cx(RE(l) / 2, IM(l) / 2);
+  }
+  const ccot = (z, p) => cdiv(ccos(z), csin(z), p);
+  const cacot = (z, p) => catan(cdiv(1, z, p), p);
 
   // ---------------------------------------------------------------- matrices & vectors
   const dims = m => [m.a.length, m.a[0].length];
@@ -323,12 +349,20 @@
         const a = RE(one()), b = IM(x);
         return cdiv(cx(Math.sin(a) * Math.cosh(b), Math.cos(a) * Math.sinh(b)), cx(Math.cos(a) * Math.cosh(b), -Math.sin(a) * Math.sinh(b)), p);
       }
+      case 'asin': return casin(one(), p);
+      case 'acos': return cacos(one(), p);
+      case 'atan': return catan(one(), p);
+      case 'cot': return ccot(one(), p);
+      case 'acot': return cacot(one(), p);
       case 'sinh': { const a = RE(one()), b = IM(x); return cx(Math.sinh(a) * Math.cos(b), Math.cosh(a) * Math.sin(b)); }
       case 'cosh': { const a = RE(one()), b = IM(x); return cx(Math.cosh(a) * Math.cos(b), Math.sinh(a) * Math.sin(b)); }
       case 'tanh': {
         const a = RE(one()), b = IM(x);
         return cdiv(cx(Math.sinh(a) * Math.cos(b), Math.cosh(a) * Math.sin(b)), cx(Math.cosh(a) * Math.cos(b), Math.sinh(a) * Math.sin(b)), p);
       }
+      case 'asinh': return casinh(one(), p);
+      case 'acosh': return cacosh(one(), p);
+      case 'atanh': return catanh(one(), p);
     }
     return fail(MATH, p);
   }

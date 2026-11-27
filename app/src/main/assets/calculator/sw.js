@@ -1,5 +1,5 @@
 // Offline cache: everything the app needs is precached on install.
-const CACHE = 'fxcalc-v5';
+const CACHE = 'fxcalc-v6';
 const FILES = ['./', 'index.html', 'style.css', 'engine.js', 'engine-x.js', 'editor.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

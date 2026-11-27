@@ -70,6 +70,20 @@
       if (this.count() >= 199) return;
       const line = this.opts.linear && this.opts.linear();
       const r = this.cur;
+      // Natural fraction entry follows the fx-991ES: 3 [a/b] 4 makes 3/4,
+      // with the cursor waiting in the denominator. Only a preceding primary
+      // (number, variable, constant, template, or bracketed group) is moved.
+      if (!line && k === 'frac' && this.c > 0) {
+        const start = this.prevPrimaryStart(r, this.c);
+        if (start !== null) {
+          const num = r.splice(start, this.c - start);
+          const tpl = { T: 'frac', s: [num, []] };
+          r.splice(start, 0, tpl);
+          this.path = this.path.concat([{ i: start, s: 1 }]);
+          this.c = 0;
+          return;
+        }
+      }
       if (!line && TPL[k]) {
         const tpl = { T: k, s: Array.from({ length: TPL[k].n }, () => []) };
         r.splice(this.c, 0, tpl);
@@ -82,6 +96,41 @@
       if (line && k === 'mixed') { r.splice(this.c, 0, 'frac'); this.c++; return; }
       r.splice(this.c, 0, k);
       this.c++;
+    }
+    // Start index of the primary that ends at `end` in row `r`, or null.
+    prevPrimaryStart(r, end) {
+      let i = end - 1;
+      while (i >= 0 && typeof r[i] === 'string' && this.isPost(r[i])) i--;
+      if (i < 0) return null;
+      let start = null;
+      if (isT(r[i])) start = i;
+      else if (r[i] === ')') start = this.matchOpen(r, i);
+      else if (typeof r[i] === 'string' && this.isPrimary(r[i])) start = i;
+      if (start === null) return null;
+      if (start > 0 && r[start - 1] === 'neg') start--;
+      return start;
+    }
+    isPost(t) {
+      return t.startsWith('cv:') || ['sq', 'cube', 'inv', 'fact', 'pct', 'degm', 'radm', 'gradm'].includes(t);
+    }
+    isPrimary(t) {
+      return /^[0-9]$/.test(t) || t === '.' || t === 'EXP' || t === '°' ||
+        /^v[A-FXYM]$/.test(t) || /^h[A-F]$/.test(t) ||
+        t.startsWith('k:') || t.startsWith('Mat') || t.startsWith('Vct') ||
+        ['pi', 'e', 'Ans', 'PreAns', 'Ran#', 'i'].includes(t);
+    }
+    matchOpen(r, end) {
+      let depth = 0;
+      for (let j = end; j >= 0; j--) {
+        const t = r[j];
+        if (typeof t !== 'string') continue;
+        if (t === ')') depth++;
+        else if (t === '(' || (t.endsWith('(') && t !== '^(' && t !== 'xrt(')) {
+          depth--;
+          if (depth === 0) return j;
+        }
+      }
+      return null;
     }
     right() {
       const r = this.cur;
